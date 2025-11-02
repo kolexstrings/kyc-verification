@@ -1,8 +1,46 @@
 import { Request, Response } from 'express';
+import { Prisma } from '@prisma/client';
 import { ResponseHandler } from '../utils/responseHandler';
 import { InnovatricsService, DocumentVerificationResult } from '../services/innovatricsClient';
+import {
+  initializeOnboardingRecord,
+  markFinished,
+  recordDocumentResult,
+  recordError,
+  recordFaceComparison,
+  recordFaceDetection,
+  recordLivenessResult,
+  recordRetry,
+  recordSelfieResult,
+} from '../services/onboardingPersistence';
 
 const innovatricsClient = new InnovatricsService();
+
+function toJsonValue(value: unknown): Prisma.InputJsonValue | Prisma.NullTypes.JsonNull {
+  if (value === undefined || value === null) {
+    return Prisma.JsonNull;
+  }
+
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    return value;
+  }
+
+  try {
+    const normalized = JSON.parse(JSON.stringify(value));
+    if (normalized === null) {
+      return Prisma.JsonNull;
+    }
+
+    return normalized as Prisma.InputJsonValue;
+  } catch (serializationError) {
+    console.warn('Failed to serialize value for onboarding persistence', serializationError);
+    return Prisma.JsonNull;
+  }
+}
 
 export interface KYCProfile {
   createdAt: number;
@@ -82,6 +120,8 @@ export interface KYCVerificationResult {
 
 export class KYCVerificationController {
   static async processKYCProfile(req: Request, res: Response) {
+    let customerId: string | null = null;
+
     try {
       const kycData: KYCProfile = req.body;
 
@@ -95,6 +135,7 @@ export class KYCVerificationController {
       const customer = await innovatricsClient.createCustomer();
 
       const externalId = kycData.userId || `${kycData.name}_${kycData.surname}_${Date.now()}`;
+      const userIdForTracking = kycData.userId || externalId;
 
       // Step 2: Store customer in Trust Platform with external ID
       await innovatricsClient.storeCustomer(customer.id, {
@@ -102,7 +143,13 @@ export class KYCVerificationController {
         onboardingStatus: 'IN_PROGRESS'
       });
 
-      const customerId = customer.id;
+      await initializeOnboardingRecord({
+        userId: userIdForTracking,
+        externalId,
+        innovatricsCustomerId: customer.id,
+      });
+
+      customerId = customer.id;
       const results: KYCVerificationResult = {
         customerId,
         overallStatus: 'pending',
@@ -122,14 +169,27 @@ export class KYCVerificationController {
             ...(backImage ? { backImage } : {}),
             ...(kycData.documentType ? { documentType: kycData.documentType } : {}),
             ...(kycData.firstNationality ? { issuingCountry: kycData.firstNationality } : {}),
+            onRetry: ({ stage, attempt, delayMs, error }) => {
+              void recordRetry(customerId!, {
+                reason: `document_${stage}`,
+                context: toJsonValue({
+                  attempt,
+                  delayMs,
+                  message: error?.message,
+                  status: error?.response?.status,
+                }),
+              }).catch(() => undefined);
+            },
           });
 
           results.documentVerification = documentResult;
+          await recordDocumentResult(customerId, documentResult);
         }
 
         // Step 3: Upload main selfie
         const selfieResult = await innovatricsClient.uploadSelfie(customerId, kycData.image);
         results.selfieUpload = selfieResult;
+        await recordSelfieResult(customerId, toJsonValue(selfieResult));
 
         // Step 4: Face detection with mask check
         const faceResult = await innovatricsClient.detectFace(kycData.image);
@@ -140,13 +200,16 @@ export class KYCVerificationController {
           detection: faceResult.detection,
           maskResult
         };
+        await recordFaceDetection(customerId, toJsonValue(faceResult), toJsonValue(maskResult));
 
         // Step 5: Liveness check with deepfake detection (using first selfie image)
         if (kycData.selfieImages.length > 0) {
           // First, upload the selfie
+          // TODO: persist additional selfie uploads once schema supports multi-frame storage
           await innovatricsClient.uploadSelfie(customerId, kycData.selfieImages[0]);
           
           // Then evaluate liveness with deepfake detection
+          // TODO: surface liveness challenge metadata (challengeId/instructions) for persistence
           const livenessResult = await innovatricsClient.evaluateLiveness(customerId, {
             challengeType: kycData.challengeType || 'passive',
             deepfakeCheck: true // Enable deepfake detection
@@ -161,6 +224,8 @@ export class KYCVerificationController {
               deepfakeConfidence: livenessResult.deepfakeConfidence 
             })
           };
+
+          await recordLivenessResult(customerId, toJsonValue(livenessResult));
         }
 
         // Step 6: Face comparison between document face and selfie
@@ -172,11 +237,18 @@ export class KYCVerificationController {
           });
 
           results.faceComparison = comparisonResult;
+          await recordFaceComparison(customerId, toJsonValue(comparisonResult));
         }
 
         // Update overall status
         results.overallStatus = 'completed';
         results.updatedAt = new Date();
+
+        await markFinished(customerId);
+        await innovatricsClient.storeCustomer(customerId, {
+          externalId,
+          onboardingStatus: 'FINISHED',
+        });
 
         return ResponseHandler.success(res, results, 'KYC verification completed successfully');
 
@@ -186,11 +258,43 @@ export class KYCVerificationController {
         results.updatedAt = new Date();
 
         console.error('KYC verification error:', verificationError);
+        const errorPayload: Parameters<typeof recordError>[1] = {
+          message: verificationError?.message ?? 'Verification failed',
+          markFailed: true,
+          context: toJsonValue(
+            verificationError?.response?.data ?? {
+              message: verificationError?.message,
+            }
+          ),
+        };
+
+        if (verificationError?.response?.status) {
+          errorPayload.code = String(verificationError.response.status);
+        }
+
+        await recordError(customerId, errorPayload).catch(() => undefined);
         return ResponseHandler.error(res, 'KYC verification failed', 500, verificationError.message);
       }
 
     } catch (error: any) {
       console.error('KYC processing error:', error);
+      if (customerId) {
+        const errorPayload: Parameters<typeof recordError>[1] = {
+          message: error?.message ?? 'Processing failed',
+          markFailed: true,
+          context: toJsonValue(
+            error?.response?.data ?? {
+              message: error?.message,
+            }
+          ),
+        };
+
+        if (error?.response?.status) {
+          errorPayload.code = String(error.response.status);
+        }
+
+        await recordError(customerId, errorPayload).catch(() => undefined);
+      }
       return ResponseHandler.error(res, 'Failed to process KYC profile', 500, error.message);
     }
   }

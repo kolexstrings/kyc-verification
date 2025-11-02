@@ -2,7 +2,7 @@ import { Prisma, OnboardingEventType, OnboardingStatus } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { DocumentVerificationResult } from './innovatricsClient';
 
-type JsonValue = Prisma.InputJsonValue;
+type JsonValue = Prisma.InputJsonValue | Prisma.NullTypes.JsonNull;
 
 interface InitializeParams {
   userId: string;
