@@ -43,18 +43,19 @@ export class VerificationController {
         return ResponseHandler.validationError(res, ['frontImage is required']);
       }
 
-      // Verify document using Innovatrics
+      // Process document using Innovatrics customer-scoped endpoints
       const documentResult = await innovatricsClient.verifyDocument({
+        customerId,
         frontImage,
-        backImage,
-        documentType
+        ...(backImage ? { backImage } : {}),
+        ...(documentType ? { documentType } : {}),
       });
 
       return ResponseHandler.success(res, {
         customerId,
         documentResult,
-        status: 'document_verified'
-      }, 'Document verified successfully');
+        status: 'document_processed'
+      }, 'Document processed successfully');
     } catch (error: any) {
       console.error('Document verification error:', error);
       return ResponseHandler.error(res, 'Failed to verify document', 500, error.message);

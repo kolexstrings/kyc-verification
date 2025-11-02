@@ -1,6 +1,6 @@
 import { Request, Response } from 'express';
 import { ResponseHandler } from '../utils/responseHandler';
-import { InnovatricsService } from '../services/innovatricsClient';
+import { InnovatricsService, DocumentVerificationResult } from '../services/innovatricsClient';
 
 const innovatricsClient = new InnovatricsService();
 
@@ -47,13 +47,7 @@ export interface KYCProfile {
 
 export interface KYCVerificationResult {
   customerId: string;
-  documentVerification?: {
-    status: string;
-    documentType: string;
-    issuingCountry: string;
-    verificationStatus: string;
-    confidence: number;
-  };
+  documentVerification?: DocumentVerificationResult;
   selfieUpload?: {
     id: string;
   };
@@ -123,18 +117,14 @@ export class KYCVerificationController {
           const backImage = kycData.identificationDocumentImage[1]; // Optional back image
 
           const documentResult = await innovatricsClient.verifyDocument({
+            customerId,
             frontImage,
-            backImage,
-            documentType: kycData.documentType || 'id_card' // Use frontend value or default
+            ...(backImage ? { backImage } : {}),
+            ...(kycData.documentType ? { documentType: kycData.documentType } : {}),
+            ...(kycData.firstNationality ? { issuingCountry: kycData.firstNationality } : {}),
           });
 
-          results.documentVerification = {
-            status: 'completed',
-            documentType: documentResult.documentType,
-            issuingCountry: documentResult.issuingCountry,
-            verificationStatus: documentResult.verificationStatus,
-            confidence: documentResult.confidence
-          };
+          results.documentVerification = documentResult;
         }
 
         // Step 3: Upload main selfie

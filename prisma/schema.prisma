@@ -1,0 +1,63 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum OnboardingStatus {
+  IN_PROGRESS
+  FINISHED
+  FAILED
+}
+
+enum OnboardingEventType {
+  STATUS_CHANGE
+  STEP_RESULT
+  ERROR
+  RETRY
+}
+
+model CustomerOnboarding {
+  id                     String              @id @default(cuid())
+  userId                 String
+  externalId             String?
+  innovatricsCustomerId  String              @unique
+  status                 OnboardingStatus    @default(IN_PROGRESS)
+  retryCount             Int                 @default(0)
+  lastErrorCode          String?
+  lastErrorMessage       String?
+  documentSummary        Json?
+  documentPages          Json?
+  inspection             Json?
+  disclosedInspection    Json?
+  selfieResult           Json?
+  livenessResult         Json?
+  faceComparison         Json?
+  createdAt              DateTime            @default(now())
+  updatedAt              DateTime            @updatedAt
+  events                 OnboardingEvent[]
+
+  @@index([userId])
+}
+
+model OnboardingEvent {
+  id                    String               @id @default(cuid())
+  customerOnboardingId  String
+  type                  OnboardingEventType
+  payload               Json?
+  createdAt             DateTime             @default(now())
+
+  customer CustomerOnboarding @relation(fields: [customerOnboardingId], references: [id], onDelete: Cascade)
+
+  @@index([customerOnboardingId, type])
+}

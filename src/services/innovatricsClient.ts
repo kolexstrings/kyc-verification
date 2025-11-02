@@ -1,6 +1,7 @@
 import axios, { AxiosInstance } from 'axios';
-import { config } from '../config/env';
 import https from 'https';
+import { config } from '../config/env';
+import { withRetry, RetryOptions } from '../utils/retry';
 
 export interface CustomerStoreRequest {
   externalId?: string;
@@ -61,25 +62,50 @@ export interface LivenessChallengeResponse {
 }
 
 export interface DocumentVerificationRequest {
-  frontImage: string; // base64 encoded
-  backImage?: string; // base64 encoded for double-sided docs
-  documentType?:
-    | 'passport'
-    | 'id_card'
-    | 'driver_license'
-    | 'residence_permit'
-    | 'visa'
-    | 'other';
+  customerId: string;
+  frontImage: string;
+  backImage?: string;
+  documentType?: string;
+  issuingCountry?: string;
+  onRetry?: (params: {
+    stage:
+      | 'create_document'
+      | 'upload_page_front'
+      | 'upload_page_back'
+      | 'inspect_document'
+      | 'disclose_inspection';
+    attempt: number;
+    delayMs: number;
+    error: any;
+  }) => void;
 }
 
-export interface DocumentVerificationResponse {
-  documentType: string;
-  issuingCountry: string;
-  documentNumber: string;
-  expirationDate: string;
-  personalNumber?: string;
-  verificationStatus: 'verified' | 'not_verified' | 'unknown';
-  confidence: number;
+export interface DocumentPageResult {
+  documentType?: {
+    type?: string;
+    issuingCountry?: string;
+    edition?: string;
+  };
+  pageType?: 'front' | 'back' | 'unknown';
+  detection?: any;
+  errorCode?: string;
+  warnings?: string[];
+  links?: any;
+}
+
+export interface DocumentVerificationSummary {
+  documentType?: string;
+  issuingCountry?: string;
+  warnings?: string[];
+  errors?: string[];
+}
+
+export interface DocumentVerificationResult {
+  document?: any;
+  summary: DocumentVerificationSummary;
+  pages: DocumentPageResult[];
+  inspection?: any;
+  disclosedInspection?: any;
 }
 
 export class InnovatricsService {
@@ -95,7 +121,7 @@ export class InnovatricsService {
       },
       timeout: 60000,
       proxy: false,
-      httpsAgent: new (require('https').Agent)({
+      httpsAgent: new https.Agent({
         rejectUnauthorized: false,
         keepAlive: true,
       }),
@@ -341,24 +367,201 @@ export class InnovatricsService {
 
   // Document Verification
   async verifyDocument(
-    documentData: DocumentVerificationRequest
-  ): Promise<DocumentVerificationResponse> {
-    try {
-      // First, create a document record (this might need to be adjusted based on exact API)
-      const response = await this.client.post('/documents', {
-        frontImage: documentData.frontImage,
-        backImage: documentData.backImage,
-        documentType: documentData.documentType || 'id_card',
-      });
+    request: DocumentVerificationRequest
+  ): Promise<DocumentVerificationResult> {
+    const { customerId, frontImage, backImage, documentType, issuingCountry } = request;
 
-      // Then verify the document
-      const verificationResponse = await this.client.post(
-        `/documents/${response.data.id}/verify`
+    try {
+      const classificationAdvice: Record<string, any> = {};
+      if (documentType) {
+        classificationAdvice.types = [documentType];
+      }
+      if (issuingCountry) {
+        classificationAdvice.countries = [issuingCountry];
+      }
+
+      const createDocumentPayload: Record<string, any> = {
+        sources: ['VIZ', 'MRZ', 'DOCUMENT_PORTRAIT'],
+      };
+
+      if (Object.keys(classificationAdvice).length > 0) {
+        createDocumentPayload.advice = {
+          classification: classificationAdvice,
+        };
+      }
+
+      const documentRetryOptions = {
+        shouldRetry: (error: any) => this.isRetryableError(error),
+        ...(request.onRetry
+          ? {
+              onRetry: ({ attempt, delayMs, error }: { attempt: number; delayMs: number; error: any }) => {
+                request.onRetry?.({
+                  stage: 'create_document',
+                  attempt,
+                  delayMs,
+                  error,
+                });
+              },
+            }
+          : {}),
+      } satisfies RetryOptions;
+
+      const documentResponse = await withRetry(
+        () =>
+          this.client.put(`/customers/${customerId}/document`, createDocumentPayload),
+        documentRetryOptions
       );
-      return verificationResponse.data;
+
+      const pages: DocumentPageResult[] = [];
+
+      const frontPageRetryOptions = {
+        shouldRetry: (error: any) => this.isRetryableError(error),
+        ...(request.onRetry
+          ? {
+              onRetry: ({ attempt, delayMs, error }: { attempt: number; delayMs: number; error: any }) => {
+                request.onRetry?.({
+                  stage: 'upload_page_front',
+                  attempt,
+                  delayMs,
+                  error,
+                });
+              },
+            }
+          : {}),
+      } satisfies RetryOptions;
+
+      const frontPageResponse = await withRetry(
+        () =>
+          this.client.put(`/customers/${customerId}/document/pages`, {
+            image: {
+              data: this.normalizeBase64Image(frontImage),
+            },
+            advice: {
+              classification: {
+                pageTypes: ['front'],
+              },
+            },
+          }),
+        frontPageRetryOptions
+      );
+      pages.push(frontPageResponse.data);
+
+      if (backImage) {
+        const backPageRetryOptions = {
+          shouldRetry: (error: any) => this.isRetryableError(error),
+          ...(request.onRetry
+            ? {
+                onRetry: ({ attempt, delayMs, error }: { attempt: number; delayMs: number; error: any }) => {
+                  request.onRetry?.({
+                    stage: 'upload_page_back',
+                    attempt,
+                    delayMs,
+                    error,
+                  });
+                },
+              }
+            : {}),
+        } satisfies RetryOptions;
+
+        const backPageResponse = await withRetry(
+          () =>
+            this.client.put(`/customers/${customerId}/document/pages`, {
+              image: {
+                data: this.normalizeBase64Image(backImage),
+              },
+              advice: {
+                classification: {
+                  pageTypes: ['back'],
+                },
+              },
+            }),
+          backPageRetryOptions
+        );
+        pages.push(backPageResponse.data);
+      }
+
+      const inspectRetryOptions = {
+        shouldRetry: (error: any) => this.isRetryableError(error),
+        ...(request.onRetry
+          ? {
+              onRetry: ({ attempt, delayMs, error }: { attempt: number; delayMs: number; error: any }) => {
+                request.onRetry?.({
+                  stage: 'inspect_document',
+                  attempt,
+                  delayMs,
+                  error,
+                });
+              },
+            }
+          : {}),
+      } satisfies RetryOptions;
+
+      const inspectionResponse = await withRetry(
+        () => this.client.post(`/customers/${customerId}/document/inspect`),
+        inspectRetryOptions
+      );
+
+      let disclosedInspection: any | undefined;
+      try {
+        const discloseRetryOptions = {
+          shouldRetry: (error: any) => this.isRetryableError(error),
+          ...(request.onRetry
+            ? {
+                onRetry: ({ attempt, delayMs, error }: { attempt: number; delayMs: number; error: any }) => {
+                  request.onRetry?.({
+                    stage: 'disclose_inspection',
+                    attempt,
+                    delayMs,
+                    error,
+                  });
+                },
+              }
+            : {}),
+        } satisfies RetryOptions;
+
+        const disclosedResponse = await withRetry(
+          () => this.client.post(`/customers/${customerId}/document/inspect/disclose`),
+          discloseRetryOptions
+        );
+        disclosedInspection = disclosedResponse.data;
+      } catch (discloseError: any) {
+        console.warn('Document inspection disclosure failed:', {
+          status: discloseError.response?.status,
+          message: discloseError.message,
+        });
+      }
+
+      const frontPage = pages.find(page => page.pageType === 'front') ?? pages[0];
+      const collectedWarnings = pages.flatMap(page => page.warnings ?? []);
+      const collectedErrors = pages
+        .map(page => page.errorCode)
+        .filter((code): code is string => Boolean(code));
+
+      const summary: DocumentVerificationSummary = {
+        ...(frontPage?.documentType?.type
+          ? { documentType: frontPage.documentType.type }
+          : {}),
+        ...(frontPage?.documentType?.issuingCountry
+          ? { issuingCountry: frontPage.documentType.issuingCountry }
+          : {}),
+        ...(collectedWarnings.length
+          ? { warnings: Array.from(new Set(collectedWarnings)) }
+          : {}),
+        ...(collectedErrors.length
+          ? { errors: Array.from(new Set(collectedErrors)) }
+          : {}),
+      };
+
+      return {
+        document: documentResponse.data,
+        summary,
+        pages,
+        inspection: inspectionResponse.data,
+        disclosedInspection,
+      };
     } catch (error: any) {
       throw new Error(
-        `Failed to verify document: ${error.response?.data?.message || error.message}`
+        `Failed to process document: ${error.response?.data?.message || error.message}`
       );
     }
   }
@@ -424,5 +627,28 @@ export class InnovatricsService {
         `Failed to upload binary image: ${error.response?.data?.message || error.message}`
       );
     }
+  }
+
+  private normalizeBase64Image(image: string): string {
+    if (!image) {
+      return image;
+    }
+
+    const commaIndex = image.indexOf(',');
+    const base64Data = commaIndex >= 0 ? image.slice(commaIndex + 1) : image;
+    return base64Data.trim();
+  }
+
+  private isRetryableError(error: any): boolean {
+    const status = error?.response?.status;
+    if (!status) {
+      return true;
+    }
+
+    if (status >= 500 || status === 429) {
+      return true;
+    }
+
+    return false;
   }
 }
