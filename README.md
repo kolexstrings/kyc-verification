@@ -201,6 +201,7 @@ sequenceDiagram
 ### Prerequisites
 - Node.js (v16 or higher)
 - Yarn package manager
+- Supabase project (PostgreSQL) for onboarding persistence
 
 ### Installation
 
@@ -224,7 +225,14 @@ sequenceDiagram
    INNOVATRICS_BASE_URL=https://your-dot-instance.com/api/v1
    INNOVATRICS_API_KEY=your_innovatrics_api_key
    INNOVATRICS_API_SECRET=your_innovatrics_api_secret
+
+   # Supabase / PostgreSQL (Prisma)
+   DATABASE_URL="postgresql://<user>:<password>@<host>:6543/postgres?pgbouncer=true&sslmode=require"
+   DIRECT_URL="postgresql://<user>:<password>@<host>:5432/postgres?sslmode=require"
    ```
+
+   > **Note:** `DATABASE_URL` should point at the Supabase pooled connection (port `6543`) and include `?pgbouncer=true&sslmode=require`. `DIRECT_URL` must use the direct connection (port `5432`) for Prisma migrations.
+
 
 3. **Build the project:**
    ```bash
@@ -244,6 +252,36 @@ sequenceDiagram
    ```bash
    yarn start
    ```
+
+### Database Setup (Prisma + Supabase)
+
+1. **Install Prisma client** (already handled via `yarn install`, but run again if needed):
+   ```bash
+   npx prisma generate
+   ```
+
+2. **Verify connectivity** (requires `psql`):
+   ```bash
+   psql "$DIRECT_URL"
+   ```
+   - Successful connection confirms credentials and network access.
+
+3. **Apply migrations** (creates onboarding tables):
+   ```bash
+   npx prisma migrate dev --name init_onboarding_schema
+   ```
+
+4. **Optional:** Inspect the generated SQL in `prisma/migrations/` for auditing.
+
+5. **Regenerate Prisma client** after schema changes:
+   ```bash
+   npx prisma generate
+   ```
+
+If migrations fail with `P1001` (cannot reach database), double-check:
+- `DIRECT_URL` uses the correct password and includes `sslmode=require`.
+- Outbound TCP on ports `5432` and `6543` is allowed from your network.
+- Supabase project is running (check Status in Supabase dashboard).
 
 ## Development Scripts
 

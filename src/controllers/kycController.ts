@@ -1,5 +1,4 @@
 import { Request, Response } from 'express';
-import { Prisma } from '@prisma/client';
 import { ResponseHandler } from '../utils/responseHandler';
 import { InnovatricsService, DocumentVerificationResult } from '../services/innovatricsClient';
 import {
@@ -15,32 +14,6 @@ import {
 } from '../services/onboardingPersistence';
 
 const innovatricsClient = new InnovatricsService();
-
-function toJsonValue(value: unknown): Prisma.InputJsonValue | Prisma.NullTypes.JsonNull {
-  if (value === undefined || value === null) {
-    return Prisma.JsonNull;
-  }
-
-  if (value instanceof Date) {
-    return value.toISOString();
-  }
-
-  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
-    return value;
-  }
-
-  try {
-    const normalized = JSON.parse(JSON.stringify(value));
-    if (normalized === null) {
-      return Prisma.JsonNull;
-    }
-
-    return normalized as Prisma.InputJsonValue;
-  } catch (serializationError) {
-    console.warn('Failed to serialize value for onboarding persistence', serializationError);
-    return Prisma.JsonNull;
-  }
-}
 
 export interface KYCProfile {
   createdAt: number;
@@ -172,12 +145,12 @@ export class KYCVerificationController {
             onRetry: ({ stage, attempt, delayMs, error }) => {
               void recordRetry(customerId!, {
                 reason: `document_${stage}`,
-                context: toJsonValue({
+                context: {
                   attempt,
                   delayMs,
                   message: error?.message,
                   status: error?.response?.status,
-                }),
+                },
               }).catch(() => undefined);
             },
           });
@@ -189,7 +162,7 @@ export class KYCVerificationController {
         // Step 3: Upload main selfie
         const selfieResult = await innovatricsClient.uploadSelfie(customerId, kycData.image);
         results.selfieUpload = selfieResult;
-        await recordSelfieResult(customerId, toJsonValue(selfieResult));
+        await recordSelfieResult(customerId, selfieResult);
 
         // Step 4: Face detection with mask check
         const faceResult = await innovatricsClient.detectFace(kycData.image);
@@ -200,7 +173,7 @@ export class KYCVerificationController {
           detection: faceResult.detection,
           maskResult
         };
-        await recordFaceDetection(customerId, toJsonValue(faceResult), toJsonValue(maskResult));
+        await recordFaceDetection(customerId, faceResult, maskResult);
 
         // Step 5: Liveness check with deepfake detection (using first selfie image)
         if (kycData.selfieImages.length > 0) {
@@ -225,7 +198,7 @@ export class KYCVerificationController {
             })
           };
 
-          await recordLivenessResult(customerId, toJsonValue(livenessResult));
+          await recordLivenessResult(customerId, livenessResult);
         }
 
         // Step 6: Face comparison between document face and selfie
@@ -237,7 +210,7 @@ export class KYCVerificationController {
           });
 
           results.faceComparison = comparisonResult;
-          await recordFaceComparison(customerId, toJsonValue(comparisonResult));
+          await recordFaceComparison(customerId, comparisonResult);
         }
 
         // Update overall status
@@ -261,11 +234,10 @@ export class KYCVerificationController {
         const errorPayload: Parameters<typeof recordError>[1] = {
           message: verificationError?.message ?? 'Verification failed',
           markFailed: true,
-          context: toJsonValue(
+          context:
             verificationError?.response?.data ?? {
               message: verificationError?.message,
-            }
-          ),
+            },
         };
 
         if (verificationError?.response?.status) {
@@ -282,11 +254,10 @@ export class KYCVerificationController {
         const errorPayload: Parameters<typeof recordError>[1] = {
           message: error?.message ?? 'Processing failed',
           markFailed: true,
-          context: toJsonValue(
+          context:
             error?.response?.data ?? {
               message: error?.message,
-            }
-          ),
+            },
         };
 
         if (error?.response?.status) {

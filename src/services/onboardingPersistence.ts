@@ -1,8 +1,7 @@
-import { Prisma, OnboardingEventType, OnboardingStatus } from '@prisma/client';
-import { prisma } from '../lib/prisma';
+import { getSupabaseClient } from '../lib/supabaseClient';
 import { DocumentVerificationResult } from './innovatricsClient';
 
-type JsonValue = Prisma.InputJsonValue | Prisma.NullTypes.JsonNull;
+type JsonValue = unknown;
 
 interface InitializeParams {
   userId: string;
@@ -22,48 +21,120 @@ interface RecordRetryParams {
   context?: JsonValue;
 }
 
-type UpdateEvent = {
+type OnboardingEventType = 'STATUS_CHANGE' | 'STEP_RESULT' | 'ERROR' | 'RETRY';
+
+interface OnboardingEvent {
   type: OnboardingEventType;
   payload?: JsonValue;
-};
-
-async function updateRecord(
-  innovatricsCustomerId: string,
-  data: Prisma.CustomerOnboardingUpdateInput,
-  event?: UpdateEvent
-) {
-  return prisma.customerOnboarding.update({
-    where: { innovatricsCustomerId },
-    data: {
-      ...data,
-      ...(event
-        ? {
-            events: {
-              create: {
-                type: event.type,
-                payload: event.payload ?? Prisma.JsonNull,
-              },
-            },
-          }
-        : {}),
-    },
-  });
 }
 
-async function safeUpdate(
-  innovatricsCustomerId: string,
-  data: Prisma.CustomerOnboardingUpdateInput,
-  event?: UpdateEvent
-) {
+interface CustomerOnboardingRow {
+  id: string;
+  retry_count?: number | null;
+}
+
+const STATUS = {
+  IN_PROGRESS: 'IN_PROGRESS',
+  FINISHED: 'FINISHED',
+  FAILED: 'FAILED',
+} as const;
+
+function toDbJson(value: unknown): JsonValue {
+  if (value === undefined || value === null) {
+    return null;
+  }
+
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    return value;
+  }
+
   try {
-    return await updateRecord(innovatricsCustomerId, data, event);
+    return JSON.parse(JSON.stringify(value));
   } catch (error) {
-    console.error('Failed to update onboarding record', {
+    console.warn('Failed to serialise value for Supabase persistence', error);
+    return null;
+  }
+}
+
+async function fetchOnboardingRow(innovatricsCustomerId: string): Promise<CustomerOnboardingRow | null> {
+  const supabase = getSupabaseClient();
+  const { data, error } = await supabase
+    .from('customer_onboarding')
+    .select('id,retry_count')
+    .eq('innovatrics_customer_id', innovatricsCustomerId)
+    .maybeSingle();
+
+  if (error) {
+    console.error('Failed to load onboarding record', {
       innovatricsCustomerId,
       error,
     });
     return null;
   }
+
+  return data ?? null;
+}
+
+async function insertEvent(customerId: string, event: OnboardingEvent) {
+  const supabase = getSupabaseClient();
+  const { error } = await supabase.from('onboarding_events').insert({
+    customer_onboarding_id: customerId,
+    type: event.type,
+    payload: toDbJson(event.payload ?? null),
+  });
+
+  if (error) {
+    console.error('Failed to record onboarding event', {
+      customerId,
+      event,
+      error,
+    });
+  }
+}
+
+async function updateOnboardingRecord(options: {
+  innovatricsCustomerId: string;
+  fields: Record<string, unknown>;
+  event?: OnboardingEvent;
+  existing?: CustomerOnboardingRow | null;
+}) {
+  const { innovatricsCustomerId, fields, event, existing } = options;
+  const supabase = getSupabaseClient();
+
+  let record = existing ?? (await fetchOnboardingRow(innovatricsCustomerId));
+
+  if (!record) {
+    console.warn('Cannot update onboarding record because it was not found', {
+      innovatricsCustomerId,
+    });
+    return null;
+  }
+
+  const { data, error } = await supabase
+    .from('customer_onboarding')
+    .update(fields)
+    .eq('id', record.id)
+    .select('id')
+    .single();
+
+  if (error) {
+    console.error('Failed to update onboarding record', {
+      innovatricsCustomerId,
+      fields,
+      error,
+    });
+    return null;
+  }
+
+  if (event) {
+    await insertEvent(record.id, event);
+  }
+
+  return data;
 }
 
 export async function initializeOnboardingRecord({
@@ -71,74 +142,117 @@ export async function initializeOnboardingRecord({
   externalId,
   innovatricsCustomerId,
 }: InitializeParams) {
-  return prisma.customerOnboarding.upsert({
-    where: { innovatricsCustomerId },
-    update: {
-      userId,
-      externalId: externalId ?? null,
-      status: OnboardingStatus.IN_PROGRESS,
-      lastErrorCode: null,
-      lastErrorMessage: null,
-    },
-    create: {
-      userId,
-      externalId: externalId ?? null,
+  const supabase = getSupabaseClient();
+  const existing = await fetchOnboardingRow(innovatricsCustomerId);
+
+  if (existing) {
+    return updateOnboardingRecord({
       innovatricsCustomerId,
-      status: OnboardingStatus.IN_PROGRESS,
-      events: {
-        create: {
-          type: OnboardingEventType.STATUS_CHANGE,
-          payload: {
-            status: OnboardingStatus.IN_PROGRESS,
-            at: new Date().toISOString(),
-          },
+      existing,
+      fields: {
+        user_id: userId,
+        external_id: externalId ?? null,
+        status: STATUS.IN_PROGRESS,
+        last_error_code: null,
+        last_error_message: null,
+      },
+      event: {
+        type: 'STATUS_CHANGE',
+        payload: {
+          status: STATUS.IN_PROGRESS,
+          at: new Date().toISOString(),
         },
       },
+    });
+  }
+
+  const { data, error } = await supabase
+    .from('customer_onboarding')
+    .insert({
+      user_id: userId,
+      external_id: externalId ?? null,
+      innovatrics_customer_id: innovatricsCustomerId,
+      status: STATUS.IN_PROGRESS,
+      retry_count: 0,
+      last_error_code: null,
+      last_error_message: null,
+    })
+    .select('id')
+    .single();
+
+  if (error) {
+    console.error('Failed to create onboarding record', {
+      innovatricsCustomerId,
+      error,
+    });
+    throw new Error('Failed to create onboarding record');
+  }
+
+  await insertEvent(data.id, {
+    type: 'STATUS_CHANGE',
+    payload: {
+      status: STATUS.IN_PROGRESS,
+      at: new Date().toISOString(),
     },
   });
+
+  return data;
 }
 
 export async function getOnboardingByInnovatricsId(innovatricsCustomerId: string) {
-  return prisma.customerOnboarding.findUnique({
-    where: { innovatricsCustomerId },
-  });
+  const supabase = getSupabaseClient();
+  const { data, error } = await supabase
+    .from('customer_onboarding')
+    .select('*')
+    .eq('innovatrics_customer_id', innovatricsCustomerId)
+    .maybeSingle();
+
+  if (error) {
+    console.error('Failed to fetch onboarding record', {
+      innovatricsCustomerId,
+      error,
+    });
+    return null;
+  }
+
+  return data ?? null;
 }
 
 export async function recordDocumentResult(
   innovatricsCustomerId: string,
   documentResult: DocumentVerificationResult
 ) {
-  return safeUpdate(
+  return updateOnboardingRecord({
     innovatricsCustomerId,
-    {
-      documentSummary: (documentResult.summary as unknown as JsonValue) ?? Prisma.JsonNull,
-      documentPages: (documentResult.pages as unknown as JsonValue) ?? Prisma.JsonNull,
-      inspection: (documentResult.inspection as unknown as JsonValue) ?? Prisma.JsonNull,
-      disclosedInspection: (documentResult.disclosedInspection as unknown as JsonValue) ?? Prisma.JsonNull,
+    fields: {
+      document_summary: toDbJson(documentResult.summary),
+      document_pages: toDbJson(documentResult.pages),
+      inspection: toDbJson(documentResult.inspection),
+      disclosed_inspection: toDbJson(documentResult.disclosedInspection),
     },
-    {
-      type: OnboardingEventType.STEP_RESULT,
+    event: {
+      type: 'STEP_RESULT',
       payload: {
         step: 'document',
-        summary: (documentResult.summary as unknown as JsonValue) ?? Prisma.JsonNull,
-      } as JsonValue,
-    }
-  );
+        summary: documentResult.summary ?? null,
+      },
+    },
+  });
 }
 
 export async function recordSelfieResult(innovatricsCustomerId: string, selfieResult: JsonValue) {
-  return safeUpdate(
+  return updateOnboardingRecord({
     innovatricsCustomerId,
-    {
-      selfieResult: selfieResult ?? Prisma.JsonNull,
+    fields: {
+      selfie_result: toDbJson(selfieResult),
     },
-    {
-      type: OnboardingEventType.STEP_RESULT,
+    event: {
+      type: 'STEP_RESULT',
       payload: {
         step: 'selfie_upload',
       },
-    }
-  );
+    },
+  });
 }
 
 export async function recordFaceDetection(
@@ -146,120 +260,128 @@ export async function recordFaceDetection(
   detectionResult: JsonValue,
   maskResult: JsonValue
 ) {
-  return safeUpdate(
+  return updateOnboardingRecord({
     innovatricsCustomerId,
-    {
-      faceComparison: detectionResult ?? Prisma.JsonNull,
-      livenessResult: maskResult ?? Prisma.JsonNull,
+    fields: {
+      face_comparison: toDbJson(detectionResult),
+      liveness_result: toDbJson(maskResult),
     },
-    {
-      type: OnboardingEventType.STEP_RESULT,
+    event: {
+      type: 'STEP_RESULT',
       payload: {
         step: 'face_detection',
       },
-    }
-  );
+    },
+  });
 }
 
 export async function recordLivenessResult(
   innovatricsCustomerId: string,
   livenessResult: JsonValue
 ) {
-  return safeUpdate(
+  return updateOnboardingRecord({
     innovatricsCustomerId,
-    {
-      livenessResult: livenessResult ?? Prisma.JsonNull,
+    fields: {
+      liveness_result: toDbJson(livenessResult),
     },
-    {
-      type: OnboardingEventType.STEP_RESULT,
+    event: {
+      type: 'STEP_RESULT',
       payload: {
         step: 'liveness',
       },
-    }
-  );
+    },
+  });
 }
 
 export async function recordFaceComparison(
   innovatricsCustomerId: string,
   comparisonResult: JsonValue
 ) {
-  return safeUpdate(
+  return updateOnboardingRecord({
     innovatricsCustomerId,
-    {
-      faceComparison: comparisonResult ?? Prisma.JsonNull,
+    fields: {
+      face_comparison: toDbJson(comparisonResult),
     },
-    {
-      type: OnboardingEventType.STEP_RESULT,
+    event: {
+      type: 'STEP_RESULT',
       payload: {
         step: 'face_comparison',
       },
-    }
-  );
+    },
+  });
 }
 
 export async function markFinished(innovatricsCustomerId: string) {
-  return safeUpdate(
+  return updateOnboardingRecord({
     innovatricsCustomerId,
-    {
-      status: OnboardingStatus.FINISHED,
-      lastErrorCode: null,
-      lastErrorMessage: null,
+    fields: {
+      status: STATUS.FINISHED,
+      last_error_code: null,
+      last_error_message: null,
     },
-    {
-      type: OnboardingEventType.STATUS_CHANGE,
+    event: {
+      type: 'STATUS_CHANGE',
       payload: {
-        status: OnboardingStatus.FINISHED,
+        status: STATUS.FINISHED,
         at: new Date().toISOString(),
       },
-    }
-  );
+    },
+  });
 }
 
 export async function recordError(
   innovatricsCustomerId: string,
   { code, message, markFailed, context }: RecordErrorParams
 ) {
-  return safeUpdate(
+  const status = markFailed ? STATUS.FAILED : STATUS.IN_PROGRESS;
+
+  return updateOnboardingRecord({
     innovatricsCustomerId,
-    {
-      status: markFailed ? OnboardingStatus.FAILED : OnboardingStatus.IN_PROGRESS,
-      lastErrorCode: code ?? null,
-      lastErrorMessage: message,
+    fields: {
+      status,
+      last_error_code: code ?? null,
+      last_error_message: message,
     },
-    {
-      type: OnboardingEventType.ERROR,
-      payload: (
-        {
-          code,
-          message,
-          context: context ?? Prisma.JsonNull,
-          at: new Date().toISOString(),
-        } as unknown
-      ) as JsonValue,
-    }
-  );
+    event: {
+      type: 'ERROR',
+      payload: {
+        code: code ?? null,
+        message,
+        context: context ?? null,
+        at: new Date().toISOString(),
+      },
+    },
+  });
 }
 
 export async function recordRetry(
   innovatricsCustomerId: string,
   { reason, context }: RecordRetryParams
 ) {
-  return safeUpdate(
+  const existing = await fetchOnboardingRow(innovatricsCustomerId);
+
+  if (!existing) {
+    console.warn('Cannot record retry because onboarding record was not found', {
+      innovatricsCustomerId,
+    });
+    return null;
+  }
+
+  const nextRetryCount = (existing.retry_count ?? 0) + 1;
+
+  return updateOnboardingRecord({
     innovatricsCustomerId,
-    {
-      retryCount: {
-        increment: 1,
+    existing,
+    fields: {
+      retry_count: nextRetryCount,
+    },
+    event: {
+      type: 'RETRY',
+      payload: {
+        reason,
+        context: context ?? null,
+        at: new Date().toISOString(),
       },
     },
-    {
-      type: OnboardingEventType.RETRY,
-      payload: (
-        {
-          reason,
-          context: context ?? Prisma.JsonNull,
-          at: new Date().toISOString(),
-        } as unknown
-      ) as JsonValue,
-    }
-  );
+  });
 }
