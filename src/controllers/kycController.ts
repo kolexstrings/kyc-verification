@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import { ResponseHandler } from '../utils/responseHandler';
+import { normalizeImagePayload } from '../utils/image';
 import { InnovatricsService, DocumentVerificationResult } from '../services/innovatricsClient';
 import {
   initializeOnboardingRecord,
@@ -133,13 +134,16 @@ export class KYCVerificationController {
       try {
         // Step 2: Document verification (handle multiple documents)
         if (kycData.identificationDocumentImage.length >= 1) {
-          const frontImage = kycData.identificationDocumentImage[0];
-          const backImage = kycData.identificationDocumentImage[1]; // Optional back image
+          const frontImageRaw = kycData.identificationDocumentImage[0];
+          const backImageRaw = kycData.identificationDocumentImage[1]; // Optional back image
+
+          const frontImage = normalizeImagePayload(frontImageRaw);
+          const backImage = backImageRaw ? normalizeImagePayload(backImageRaw) : undefined;
 
           const documentResult = await innovatricsClient.verifyDocument({
             customerId,
-            frontImage,
-            ...(backImage ? { backImage } : {}),
+            frontImage: frontImage.base64,
+            ...(backImage ? { backImage: backImage.base64 } : {}),
             ...(kycData.documentType ? { documentType: kycData.documentType } : {}),
             ...(kycData.firstNationality ? { issuingCountry: kycData.firstNationality } : {}),
             onRetry: ({ stage, attempt, delayMs, error }) => {
@@ -156,16 +160,26 @@ export class KYCVerificationController {
           });
 
           results.documentVerification = documentResult;
-          await recordDocumentResult(customerId, documentResult);
+          await recordDocumentResult(customerId, {
+            documentResult,
+            images: {
+              front: frontImage,
+              ...(backImage ? { back: backImage } : {}),
+            },
+          });
         }
 
         // Step 3: Upload main selfie
-        const selfieResult = await innovatricsClient.uploadSelfie(customerId, kycData.image);
+        const primarySelfie = normalizeImagePayload(kycData.image);
+        const selfieResult = await innovatricsClient.uploadSelfie(customerId, primarySelfie.base64);
         results.selfieUpload = selfieResult;
-        await recordSelfieResult(customerId, selfieResult);
+        await recordSelfieResult(customerId, {
+          selfieResult,
+          image: primarySelfie,
+        });
 
         // Step 4: Face detection with mask check
-        const faceResult = await innovatricsClient.detectFace(kycData.image);
+        const faceResult = await innovatricsClient.detectFace(primarySelfie.base64);
         const maskResult = await innovatricsClient.checkFaceMask(faceResult.id);
 
         results.faceDetection = {
@@ -173,14 +187,19 @@ export class KYCVerificationController {
           detection: faceResult.detection,
           maskResult
         };
-        await recordFaceDetection(customerId, faceResult, maskResult);
+        await recordFaceDetection(customerId, {
+          faceResult,
+          maskResult,
+          image: primarySelfie,
+        });
 
         // Step 5: Liveness check with deepfake detection (using first selfie image)
         if (kycData.selfieImages.length > 0) {
           // First, upload the selfie
           // TODO: persist additional selfie uploads once schema supports multi-frame storage
-          await innovatricsClient.uploadSelfie(customerId, kycData.selfieImages[0]);
-          
+          const supplementalSelfie = normalizeImagePayload(kycData.selfieImages[0]);
+          await innovatricsClient.uploadSelfie(customerId, supplementalSelfie.base64);
+
           // Then evaluate liveness with deepfake detection
           // TODO: surface liveness challenge metadata (challengeId/instructions) for persistence
           const livenessResult = await innovatricsClient.evaluateLiveness(customerId, {
@@ -198,7 +217,10 @@ export class KYCVerificationController {
             })
           };
 
-          await recordLivenessResult(customerId, livenessResult);
+          await recordLivenessResult(customerId, {
+            livenessResult,
+            image: supplementalSelfie,
+          });
         }
 
         // Step 6: Face comparison between document face and selfie
@@ -210,7 +232,10 @@ export class KYCVerificationController {
           });
 
           results.faceComparison = comparisonResult;
-          await recordFaceComparison(customerId, comparisonResult);
+          await recordFaceComparison(customerId, {
+            comparisonResult,
+            image: primarySelfie,
+          });
         }
 
         // Update overall status

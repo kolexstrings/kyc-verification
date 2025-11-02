@@ -1,5 +1,6 @@
 import { getSupabaseClient } from '../lib/supabaseClient';
 import { DocumentVerificationResult } from './innovatricsClient';
+import { NormalizedImage } from '../utils/image';
 
 type JsonValue = unknown;
 
@@ -218,10 +219,41 @@ export async function getOnboardingByInnovatricsId(innovatricsCustomerId: string
   return data ?? null;
 }
 
+interface DocumentPersistencePayload {
+  documentResult: DocumentVerificationResult;
+  images: {
+    front: NormalizedImage;
+    back?: NormalizedImage;
+  };
+}
+
+interface SelfiePersistencePayload {
+  selfieResult: JsonValue;
+  image: NormalizedImage;
+}
+
+interface FaceDetectionPersistencePayload {
+  faceResult: JsonValue;
+  maskResult: JsonValue;
+  image: NormalizedImage;
+}
+
+interface LivenessPersistencePayload {
+  livenessResult: JsonValue;
+  image?: NormalizedImage;
+}
+
+interface FaceComparisonPersistencePayload {
+  comparisonResult: JsonValue;
+  image: NormalizedImage;
+}
+
 export async function recordDocumentResult(
   innovatricsCustomerId: string,
-  documentResult: DocumentVerificationResult
+  payload: DocumentPersistencePayload
 ) {
+  const { documentResult, images } = payload;
+
   return updateOnboardingRecord({
     innovatricsCustomerId,
     fields: {
@@ -235,21 +267,26 @@ export async function recordDocumentResult(
       payload: {
         step: 'document',
         summary: documentResult.summary ?? null,
+        images,
       },
     },
   });
 }
 
-export async function recordSelfieResult(innovatricsCustomerId: string, selfieResult: JsonValue) {
+export async function recordSelfieResult(
+  innovatricsCustomerId: string,
+  payload: SelfiePersistencePayload
+) {
   return updateOnboardingRecord({
     innovatricsCustomerId,
     fields: {
-      selfie_result: toDbJson(selfieResult),
+      selfie_result: toDbJson(payload.selfieResult),
     },
     event: {
       type: 'STEP_RESULT',
       payload: {
         step: 'selfie_upload',
+        image: payload.image,
       },
     },
   });
@@ -257,19 +294,19 @@ export async function recordSelfieResult(innovatricsCustomerId: string, selfieRe
 
 export async function recordFaceDetection(
   innovatricsCustomerId: string,
-  detectionResult: JsonValue,
-  maskResult: JsonValue
+  payload: FaceDetectionPersistencePayload
 ) {
   return updateOnboardingRecord({
     innovatricsCustomerId,
     fields: {
-      face_comparison: toDbJson(detectionResult),
-      liveness_result: toDbJson(maskResult),
+      face_comparison: toDbJson(payload.faceResult),
+      liveness_result: toDbJson(payload.maskResult),
     },
     event: {
       type: 'STEP_RESULT',
       payload: {
         step: 'face_detection',
+        image: payload.image,
       },
     },
   });
@@ -277,17 +314,18 @@ export async function recordFaceDetection(
 
 export async function recordLivenessResult(
   innovatricsCustomerId: string,
-  livenessResult: JsonValue
+  payload: LivenessPersistencePayload
 ) {
   return updateOnboardingRecord({
     innovatricsCustomerId,
     fields: {
-      liveness_result: toDbJson(livenessResult),
+      liveness_result: toDbJson(payload.livenessResult),
     },
     event: {
       type: 'STEP_RESULT',
       payload: {
         step: 'liveness',
+        image: payload.image,
       },
     },
   });
@@ -295,17 +333,18 @@ export async function recordLivenessResult(
 
 export async function recordFaceComparison(
   innovatricsCustomerId: string,
-  comparisonResult: JsonValue
+  payload: FaceComparisonPersistencePayload
 ) {
   return updateOnboardingRecord({
     innovatricsCustomerId,
     fields: {
-      face_comparison: toDbJson(comparisonResult),
+      face_comparison: toDbJson(payload.comparisonResult),
     },
     event: {
       type: 'STEP_RESULT',
       payload: {
         step: 'face_comparison',
+        image: payload.image,
       },
     },
   });

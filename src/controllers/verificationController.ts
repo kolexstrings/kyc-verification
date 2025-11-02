@@ -1,6 +1,7 @@
 import { Request, Response } from 'express';
 import { ResponseHandler } from '../utils/responseHandler';
 import { InnovatricsService } from '../services/innovatricsClient';
+import { normalizeImagePayload } from '../utils/image';
 
 const innovatricsClient = new InnovatricsService();
 
@@ -44,10 +45,12 @@ export class VerificationController {
       }
 
       // Process document using Innovatrics customer-scoped endpoints
+      const normalizedFront = normalizeImagePayload(frontImage);
+      const normalizedBack = backImage ? normalizeImagePayload(backImage) : undefined;
       const documentResult = await innovatricsClient.verifyDocument({
         customerId,
-        frontImage,
-        ...(backImage ? { backImage } : {}),
+        frontImage: normalizedFront.base64,
+        ...(normalizedBack ? { backImage: normalizedBack.base64 } : {}),
         ...(documentType ? { documentType } : {}),
       });
 
@@ -71,6 +74,8 @@ export class VerificationController {
         return ResponseHandler.validationError(res, ['image is required']);
       }
 
+      const normalizedImage = normalizeImagePayload(image);
+
       // Submit liveness data (use provided challengeId or create new challenge)
       let finalChallengeId = challengeId;
 
@@ -82,7 +87,7 @@ export class VerificationController {
       }
 
       const livenessResult = await innovatricsClient.submitLivenessData(customerId, {
-        image,
+        image: normalizedImage.base64,
         challengeId: finalChallengeId
       });
 
@@ -107,7 +112,8 @@ export class VerificationController {
       }
 
       // Detect face
-      const faceResult = await innovatricsClient.detectFace(image);
+      const normalizedImage = normalizeImagePayload(image);
+      const faceResult = await innovatricsClient.detectFace(normalizedImage.base64);
 
       // Check for face mask
       const maskResult = await innovatricsClient.checkFaceMask(faceResult.id);
@@ -185,7 +191,8 @@ export class VerificationController {
       }
 
       // Upload selfie
-      const selfieResult = await innovatricsClient.uploadSelfie(customerId, image);
+      const normalizedImage = normalizeImagePayload(image);
+      const selfieResult = await innovatricsClient.uploadSelfie(customerId, normalizedImage.base64);
 
       return ResponseHandler.success(res, {
         customerId,
