@@ -90,7 +90,7 @@ export class VerificationController {
 
       if (!finalChallengeId) {
         const challenge = await innovatricsClient.createLivenessChallenge(customerId, {
-          challengeType: challengeType || 'passive' // Frontend choice or default
+          type: challengeType || 'passive' // Frontend choice or default
         });
         finalChallengeId = challenge.challengeId;
       }
@@ -181,7 +181,7 @@ export class VerificationController {
 
       // Create liveness challenge
       const challenge = await innovatricsClient.createLivenessChallenge(customerId, {
-        challengeType
+        type: challengeType
       });
 
       return ResponseHandler.success(res, {

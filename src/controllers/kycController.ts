@@ -120,7 +120,13 @@ export class KYCVerificationController {
       }
 
       // Step 1: Create customer (Innovatrics generates UUID)
+      console.log('\n' + '='.repeat(70));
+      console.log('🚀 STEP 1: Creating customer in Innovatrics');
+      console.log('='.repeat(70));
       const customer = await innovatricsClient.createCustomer();
+      customerId = customer.id;
+      console.log('\n✅ SUCCESS: Customer created with ID:', customerId);
+      console.log('='.repeat(70) + '\n');
 
       const externalId = kycData.userId || `${kycData.name}_${kycData.surname}_${Date.now()}`;
       const userIdForTracking = kycData.userId || externalId;
@@ -137,7 +143,6 @@ export class KYCVerificationController {
         innovatricsCustomerId: customer.id,
       });
 
-      customerId = customer.id;
       const results: KYCVerificationResult = {
         customerId,
         overallStatus: 'pending',
@@ -147,6 +152,9 @@ export class KYCVerificationController {
 
       try {
         // Step 2: Document verification (handle multiple documents)
+        console.log('\n' + '='.repeat(70));
+        console.log('📄 STEP 2: Uploading and verifying document pages');
+        console.log('='.repeat(70));
         const documentFront = await resolveImageSource({
           file: files.documentFront?.[0],
           base64: documentImagesFromBody[0],
@@ -184,7 +192,15 @@ export class KYCVerificationController {
           },
         });
 
-        results.documentVerification = documentResult;
+        results.documentVerification = {
+          classification: documentResult.classification,
+          confidence: documentResult.confidence,
+          extractedData: documentResult.extractedData,
+        };
+        console.log('\n✅ SUCCESS: Document verified');
+        console.log('   📋 Pages processed successfully');
+        console.log('='.repeat(70) + '\n');
+
         await recordDocumentResult(customerId, {
           documentResult,
           images: documentBack
@@ -193,6 +209,9 @@ export class KYCVerificationController {
         });
 
         // Step 3: Upload main selfie
+        console.log('\n' + '='.repeat(70));
+        console.log('🤳 STEP 3: Uploading selfie image');
+        console.log('='.repeat(70));
         const primarySelfieSource = await resolveImageSource({
           file: files.selfiePrimary?.[0],
           base64: kycData.image,
@@ -204,10 +223,13 @@ export class KYCVerificationController {
           throw new Error('Primary selfie image could not be processed');
         }
 
-        const selfieResult = await innovatricsClient.uploadSelfie(
-          customerId,
-          primarySelfieSource.innovatrics
-        );
+        await innovatricsClient.uploadSelfie(customerId, primarySelfieSource.innovatrics);
+        console.log('\n✅ SUCCESS: Selfie uploaded');
+        console.log('='.repeat(70) + '\n');
+
+        const selfieResult = {
+          id: customerId,
+        };
         results.selfieUpload = selfieResult;
         await recordSelfieResult(customerId, {
           selfieResult,
@@ -223,13 +245,32 @@ export class KYCVerificationController {
           detection: faceResult.detection,
           maskResult
         };
+        console.log('\n✅ SUCCESS: Face detection completed');
+        console.log('='.repeat(70) + '\n');
         await recordFaceDetection(customerId, {
           faceResult,
           maskResult,
           image: primarySelfieSource.normalized,
         });
 
-        // Step 5: Liveness check with deepfake detection (using first selfie image)
+        // Step 5: Compare document photo with selfie
+        console.log('\n' + '='.repeat(70));
+        console.log('👥 STEP 5: Comparing document photo with selfie');
+        console.log('='.repeat(70));
+        const faceComparison = await innovatricsClient.compareFaces(customerId);
+
+        results.faceComparison = {
+          score: faceComparison.score,
+        };
+        console.log('\n✅ SUCCESS: Face comparison completed');
+        console.log('   🎯 Match Score:', (faceComparison.score * 100).toFixed(1) + '%');
+        console.log('='.repeat(70) + '\n');
+        await recordFaceComparison(customerId, {
+          comparisonResult: faceComparison,
+          image: primarySelfieSource.normalized,
+        });
+
+        // Step 6: Liveness check with deepfake detection (using first selfie image)
         const supplementalSelfieSource = await resolveImageSource({
           file: files.selfieImages?.[0],
           base64: selfieImagesFromBody[0],
@@ -240,12 +281,15 @@ export class KYCVerificationController {
         if (supplementalSelfieSource) {
           // First, upload the selfie
           // TODO: persist additional selfie uploads once schema supports multi-frame storage
+          console.log('\n' + '='.repeat(70));
+          console.log('🔍 STEP 4: Performing liveness check');
+          console.log('='.repeat(70));
           await innovatricsClient.uploadSelfie(customerId, supplementalSelfieSource.innovatrics);
 
           // Then evaluate liveness with deepfake detection
           // TODO: surface liveness challenge metadata (challengeId/instructions) for persistence
           const livenessResult = await innovatricsClient.evaluateLiveness(customerId, {
-            challengeType: kycData.challengeType || 'passive',
+            type: kycData.challengeType || 'passive',
             deepfakeCheck: true // Enable deepfake detection
           });
 
@@ -258,25 +302,17 @@ export class KYCVerificationController {
               deepfakeConfidence: livenessResult.deepfakeConfidence 
             })
           };
+          console.log('\n✅ SUCCESS: Liveness check completed');
+          console.log('   🎯 Status:', livenessResult.status.toUpperCase());
+          console.log('   📊 Confidence:', (livenessResult.confidence * 100).toFixed(1) + '%');
+          if (livenessResult.isDeepfake !== undefined) {
+            console.log('   🛡️  Deepfake Detection:', livenessResult.isDeepfake ? '⚠️  DETECTED' : '✅ PASSED');
+          }
+          console.log('='.repeat(70) + '\n');
 
           await recordLivenessResult(customerId, {
             livenessResult,
             image: supplementalSelfieSource.normalized,
-          });
-        }
-
-        // Step 6: Face comparison between document face and selfie
-        if (results.faceDetection && results.selfieUpload) {
-          const faceTemplate = await innovatricsClient.getFaceTemplate(faceResult.id);
-
-          const comparisonResult = await innovatricsClient.compareFaces(faceResult.id, {
-            referenceFaceTemplate: faceTemplate.data
-          });
-
-          results.faceComparison = comparisonResult;
-          await recordFaceComparison(customerId, {
-            comparisonResult,
-            image: primarySelfieSource.normalized,
           });
         }
 
@@ -290,7 +326,25 @@ export class KYCVerificationController {
           onboardingStatus: 'FINISHED',
         });
 
-        return ResponseHandler.success(res, results, 'KYC verification completed successfully');
+        // Final success response
+        console.log('\n' + '█'.repeat(70));
+        console.log('🎉 KYC VERIFICATION COMPLETE!');
+        console.log('█'.repeat(70));
+        console.log('   ✅ Customer ID:', customerId);
+        console.log('   ✅ Document Verified:', results.documentVerification ? 'YES' : 'NO');
+        console.log('   ✅ Selfie Uploaded:', results.selfieUpload ? 'YES' : 'NO');
+        console.log('   ✅ Liveness Check:', results.livenessCheck ? results.livenessCheck.status.toUpperCase() : 'SKIPPED');
+        console.log('   ✅ Face Match:', results.faceComparison?.score >= 0.7 ? 'PASSED' : 'FAILED');
+        console.log('█'.repeat(70) + '\n');
+        
+        return ResponseHandler.success(
+          res,
+          {
+            customerId,
+            results,
+          },
+          'KYC verification completed successfully'
+        );
 
       } catch (verificationError: any) {
         // If verification fails, still return partial results
@@ -376,16 +430,46 @@ async function resolveImageSource(options: ResolveImageOptions): Promise<Resolve
   const metadata = await sharp(buffer).metadata();
   console.log(`Original image: ${metadata.width}x${metadata.height}, format: ${metadata.format}, size: ${buffer.length} bytes`);
   
-  // Resize image to max 1500x1500 first (conservative test)
-  // Will increase if this works
+  // Ensure minimum dimensions for Innovatrics (document card needs ~1000px width)
+  // Target: 1800px on longer side to ensure document card is large enough
+  const minDimension = 1800;
+  const maxDimension = 3000; // Innovatrics limit
+  
+  let targetWidth, targetHeight;
+  if (metadata.width && metadata.height) {
+    const longerSide = Math.max(metadata.width, metadata.height);
+    const shorterSide = Math.min(metadata.width, metadata.height);
+    
+    if (longerSide < minDimension) {
+      // Image too small - upscale to minimum
+      console.log(`⚠️  Image too small (${longerSide}px), upscaling to ${minDimension}px`);
+      const scale = minDimension / longerSide;
+      targetWidth = Math.round(metadata.width * scale);
+      targetHeight = Math.round(metadata.height * scale);
+    } else if (longerSide > maxDimension) {
+      // Image too large - downscale to maximum
+      console.log(`⚠️  Image too large (${longerSide}px), downscaling to ${maxDimension}px`);
+      const scale = maxDimension / longerSide;
+      targetWidth = Math.round(metadata.width * scale);
+      targetHeight = Math.round(metadata.height * scale);
+    } else {
+      // Image size is good
+      targetWidth = metadata.width;
+      targetHeight = metadata.height;
+    }
+  } else {
+    targetWidth = minDimension;
+    targetHeight = minDimension;
+  }
+  
   const resizedBuffer = await sharp(buffer)
-    .resize(1500, 1500, {
-      fit: 'inside',
-      withoutEnlargement: true,
+    .resize(targetWidth, targetHeight, {
+      fit: 'fill', // Maintain exact dimensions
+      kernel: 'lanczos3', // Best quality scaling
     })
     .jpeg({ 
-      quality: 85,
-      mozjpeg: true, // Use mozjpeg for better compression
+      quality: 90, // High quality for document text
+      mozjpeg: true,
     })
     .toBuffer();
   

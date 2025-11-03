@@ -53,7 +53,7 @@ export interface LivenessCheckOptions {
 }
 
 export interface CreateLivenessRequest {
-  challengeType?: 'passive' | 'motion' | 'expression'; // Analysis approach, not user interaction
+  type?: 'passive' | 'motion' | 'expression'; // Analysis approach, not user interaction
   options?: LivenessCheckOptions;
 }
 
@@ -280,9 +280,20 @@ export class InnovatricsService {
     challengeRequest?: CreateLivenessRequest
   ): Promise<LivenessChallengeResponse> {
     try {
+      // Map challengeType to type for Innovatrics API compatibility
+      const payload: any = {};
+      if (challengeRequest) {
+        if (challengeRequest.type) {
+          payload.type = challengeRequest.type;
+        }
+        if (challengeRequest.options) {
+          payload.options = challengeRequest.options;
+        }
+      }
+      
       const response = await this.client.put(
         `/customers/${customerId}/liveness/records/challenge`,
-        challengeRequest || {}
+        payload
       );
       return response.data;
     } catch (error: any) {
@@ -331,7 +342,7 @@ export class InnovatricsService {
   async evaluateLiveness(
     customerId: string,
     options: {
-      challengeType?: 'passive' | 'motion' | 'expression';
+      type?: 'passive' | 'motion' | 'expression';
       deepfakeCheck?: boolean;
     } = {}
   ): Promise<{
@@ -343,7 +354,7 @@ export class InnovatricsService {
     try {
       // Create a liveness challenge
       const challenge = await this.createLivenessChallenge(customerId, {
-        challengeType: options.challengeType || 'passive',
+        type: options.type || 'passive',
         options: {
           deepfakeCheck: options.deepfakeCheck,
         },
