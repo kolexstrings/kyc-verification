@@ -121,11 +121,11 @@ export class KYCVerificationController {
 
       // Step 1: Create customer (Innovatrics generates UUID)
       console.log('\n' + '='.repeat(70));
-      console.log('🚀 STEP 1: Creating customer in Innovatrics');
+      console.log('STEP 1: Creating customer in Innovatrics');
       console.log('='.repeat(70));
       const customer = await innovatricsClient.createCustomer();
       customerId = customer.id;
-      console.log('\n✅ SUCCESS: Customer created with ID:', customerId);
+      console.log('\nSUCCESS: Customer created with ID:', customerId);
       console.log('='.repeat(70) + '\n');
 
       const externalId = kycData.userId || `${kycData.name}_${kycData.surname}_${Date.now()}`;
@@ -153,7 +153,7 @@ export class KYCVerificationController {
       try {
         // Step 2: Document verification (handle multiple documents)
         console.log('\n' + '='.repeat(70));
-        console.log('📄 STEP 2: Uploading and verifying document pages');
+        console.log('STEP 2: Uploading and verifying document pages');
         console.log('='.repeat(70));
         const documentFront = await resolveImageSource({
           file: files.documentFront?.[0],
@@ -192,13 +192,9 @@ export class KYCVerificationController {
           },
         });
 
-        results.documentVerification = {
-          classification: documentResult.classification,
-          confidence: documentResult.confidence,
-          extractedData: documentResult.extractedData,
-        };
-        console.log('\n✅ SUCCESS: Document verified');
-        console.log('   📋 Pages processed successfully');
+        results.documentVerification = documentResult;
+        console.log('\nSUCCESS: Document verified');
+        console.log('   Pages processed successfully');
         console.log('='.repeat(70) + '\n');
 
         await recordDocumentResult(customerId, {
@@ -210,7 +206,7 @@ export class KYCVerificationController {
 
         // Step 3: Upload main selfie
         console.log('\n' + '='.repeat(70));
-        console.log('🤳 STEP 3: Uploading selfie image');
+        console.log('STEP 3: Uploading selfie image');
         console.log('='.repeat(70));
         const primarySelfieSource = await resolveImageSource({
           file: files.selfiePrimary?.[0],
@@ -224,7 +220,7 @@ export class KYCVerificationController {
         }
 
         await innovatricsClient.uploadSelfie(customerId, primarySelfieSource.innovatrics);
-        console.log('\n✅ SUCCESS: Selfie uploaded');
+        console.log('\nSUCCESS: Selfie uploaded');
         console.log('='.repeat(70) + '\n');
 
         const selfieResult = {
@@ -245,7 +241,7 @@ export class KYCVerificationController {
           detection: faceResult.detection,
           maskResult
         };
-        console.log('\n✅ SUCCESS: Face detection completed');
+        console.log('\nSUCCESS: Face detection completed');
         console.log('='.repeat(70) + '\n');
         await recordFaceDetection(customerId, {
           faceResult,
@@ -255,18 +251,22 @@ export class KYCVerificationController {
 
         // Step 5: Compare document photo with selfie
         console.log('\n' + '='.repeat(70));
-        console.log('👥 STEP 5: Comparing document photo with selfie');
+        console.log('STEP 5: Comparing document photo with selfie');
         console.log('='.repeat(70));
-        const faceComparison = await innovatricsClient.compareFaces(customerId);
+        
+        // Inspect customer to get face comparison automatically
+        const customerInspection = await innovatricsClient.inspectCustomer(customerId);
+        const faceMatchScore = customerInspection?.faceMatch?.score || 0;
 
         results.faceComparison = {
-          score: faceComparison.score,
+          score: faceMatchScore,
         };
-        console.log('\n✅ SUCCESS: Face comparison completed');
-        console.log('   🎯 Match Score:', (faceComparison.score * 100).toFixed(1) + '%');
+        console.log('\nSUCCESS: Face comparison completed');
+        console.log('   Match Score:', (faceMatchScore * 100).toFixed(1) + '%');
+        console.log('   Result:', faceMatchScore >= 0.7 ? 'MATCH' : 'NO MATCH');
         console.log('='.repeat(70) + '\n');
         await recordFaceComparison(customerId, {
-          comparisonResult: faceComparison,
+          comparisonResult: { score: faceMatchScore },
           image: primarySelfieSource.normalized,
         });
 
@@ -282,7 +282,7 @@ export class KYCVerificationController {
           // First, upload the selfie
           // TODO: persist additional selfie uploads once schema supports multi-frame storage
           console.log('\n' + '='.repeat(70));
-          console.log('🔍 STEP 4: Performing liveness check');
+          console.log('STEP 4: Performing liveness check');
           console.log('='.repeat(70));
           await innovatricsClient.uploadSelfie(customerId, supplementalSelfieSource.innovatrics);
 
@@ -302,11 +302,11 @@ export class KYCVerificationController {
               deepfakeConfidence: livenessResult.deepfakeConfidence 
             })
           };
-          console.log('\n✅ SUCCESS: Liveness check completed');
-          console.log('   🎯 Status:', livenessResult.status.toUpperCase());
-          console.log('   📊 Confidence:', (livenessResult.confidence * 100).toFixed(1) + '%');
+          console.log('\nSUCCESS: Liveness check completed');
+          console.log('   Status:', livenessResult.status.toUpperCase());
+          console.log('   Confidence:', (livenessResult.confidence * 100).toFixed(1) + '%');
           if (livenessResult.isDeepfake !== undefined) {
-            console.log('   🛡️  Deepfake Detection:', livenessResult.isDeepfake ? '⚠️  DETECTED' : '✅ PASSED');
+            console.log('   Deepfake Detection:', livenessResult.isDeepfake ? 'DETECTED' : 'PASSED');
           }
           console.log('='.repeat(70) + '\n');
 
@@ -327,15 +327,15 @@ export class KYCVerificationController {
         });
 
         // Final success response
-        console.log('\n' + '█'.repeat(70));
-        console.log('🎉 KYC VERIFICATION COMPLETE!');
-        console.log('█'.repeat(70));
-        console.log('   ✅ Customer ID:', customerId);
-        console.log('   ✅ Document Verified:', results.documentVerification ? 'YES' : 'NO');
-        console.log('   ✅ Selfie Uploaded:', results.selfieUpload ? 'YES' : 'NO');
-        console.log('   ✅ Liveness Check:', results.livenessCheck ? results.livenessCheck.status.toUpperCase() : 'SKIPPED');
-        console.log('   ✅ Face Match:', results.faceComparison?.score >= 0.7 ? 'PASSED' : 'FAILED');
-        console.log('█'.repeat(70) + '\n');
+        console.log('\n' + '='.repeat(70));
+        console.log('KYC VERIFICATION COMPLETE!');
+        console.log('='.repeat(70));
+        console.log('   Customer ID:', customerId);
+        console.log('   Document Verified:', results.documentVerification ? 'YES' : 'NO');
+        console.log('   Selfie Uploaded:', results.selfieUpload ? 'YES' : 'NO');
+        console.log('   Liveness Check:', results.livenessCheck ? results.livenessCheck.status.toUpperCase() : 'SKIPPED');
+        console.log('   Face Match:', (results.faceComparison?.score ?? 0) >= 0.7 ? 'PASSED' : 'FAILED');
+        console.log('='.repeat(70) + '\n');
         
         return ResponseHandler.success(
           res,

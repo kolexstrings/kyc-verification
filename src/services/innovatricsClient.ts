@@ -274,6 +274,18 @@ export class InnovatricsService {
     }
   }
 
+  // Customer Inspection - compares document portrait with selfie
+  async inspectCustomer(customerId: string): Promise<any> {
+    try {
+      const response = await this.client.post(`/customers/${customerId}/inspect`);
+      return response.data;
+    } catch (error: any) {
+      throw new Error(
+        `Failed to inspect customer: ${error.response?.data?.message || error.message}`
+      );
+    }
+  }
+
   // Liveness Detection
   async createLivenessChallenge(
     customerId: string,
@@ -290,6 +302,8 @@ export class InnovatricsService {
           payload.options = challengeRequest.options;
         }
       }
+      
+      console.log('DEBUG: Liveness challenge payload:', JSON.stringify(payload));
       
       const response = await this.client.put(
         `/customers/${customerId}/liveness/records/challenge`,
