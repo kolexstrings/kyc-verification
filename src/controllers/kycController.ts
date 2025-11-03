@@ -1,6 +1,6 @@
 import { Request, Response } from 'express';
 import { ResponseHandler } from '../utils/responseHandler';
-import { normalizeImagePayload } from '../utils/image';
+import { normalizeImagePayload, NormalizedImage } from '../utils/image';
 import { InnovatricsService, DocumentVerificationResult } from '../services/innovatricsClient';
 import {
   initializeOnboardingRecord,
@@ -160,12 +160,13 @@ export class KYCVerificationController {
           });
 
           results.documentVerification = documentResult;
+          const documentImages: { front: NormalizedImage; back?: NormalizedImage } = backImage
+            ? { front: frontImage, back: backImage }
+            : { front: frontImage };
+
           await recordDocumentResult(customerId, {
             documentResult,
-            images: {
-              front: frontImage,
-              ...(backImage ? { back: backImage } : {}),
-            },
+            images: documentImages,
           });
         }
 
