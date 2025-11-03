@@ -8,6 +8,7 @@ import {
 } from '../services/innovatricsClient';
 import { uploadImageFromBuffer } from '../services/cloudinaryService';
 import type { KycUploadRequestFiles } from '../middleware/kycUpload';
+import sharp from 'sharp';
 import {
   initializeOnboardingRecord,
   markFinished,
@@ -371,31 +372,55 @@ async function resolveImageSource(options: ResolveImageOptions): Promise<Resolve
     return null;
   }
 
+  // Get image metadata first
+  const metadata = await sharp(buffer).metadata();
+  console.log(`Original image: ${metadata.width}x${metadata.height}, format: ${metadata.format}, size: ${buffer.length} bytes`);
+  
+  // Resize image to max 1500x1500 first (conservative test)
+  // Will increase if this works
+  const resizedBuffer = await sharp(buffer)
+    .resize(1500, 1500, {
+      fit: 'inside',
+      withoutEnlargement: true,
+    })
+    .jpeg({ 
+      quality: 85,
+      mozjpeg: true, // Use mozjpeg for better compression
+    })
+    .toBuffer();
+  
+  const resizedMetadata = await sharp(resizedBuffer).metadata();
+  console.log(`Resized image: ${resizedMetadata.width}x${resizedMetadata.height}, size: ${resizedBuffer.length} bytes`);
+
   const uploadOptions: Parameters<typeof uploadImageFromBuffer>[2] = {};
   if (tags && tags.length > 0) {
     uploadOptions.tags = tags;
   }
 
   const uploadResult = await uploadImageFromBuffer(
-    buffer,
+    resizedBuffer, // Upload resized version to Cloudinary
     generateUploadFileName(file, defaultFileName),
     uploadOptions
   );
+
+  // Convert resized buffer to base64 for Innovatrics (they don't support URLs for documents)
+  const base64Data = resizedBuffer.toString('base64');
 
   const normalized: NormalizedImage = {
     url: uploadResult.secureUrl,
     publicId: uploadResult.publicId,
     format: uploadResult.format,
-    bytes: uploadResult.bytes,
+    bytes: resizedBuffer.length, // Use resized buffer size
     resourceType: 'image',
-    ...(mimeType ? { mimeType } : {}),
+    base64: base64Data,
+    ...(mimeType ? { mimeType: 'image/jpeg' } : { mimeType: 'image/jpeg' }), // Sharp outputs JPEG
     ...(uploadResult.width ? { width: uploadResult.width } : {}),
     ...(uploadResult.height ? { height: uploadResult.height } : {}),
   };
 
   return {
     normalized,
-    innovatrics: { url: uploadResult.secureUrl },
+    innovatrics: base64Data, // Send base64 string directly
   };
 }
 

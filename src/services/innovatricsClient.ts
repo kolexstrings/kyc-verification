@@ -121,7 +121,9 @@ export class InnovatricsService {
         'Content-Type': 'application/json',
         Host: config.innovatrics.host,
       },
-      timeout: 60000,
+      timeout: 120000, // Increased to 2 minutes for large images
+      maxBodyLength: 50 * 1024 * 1024, // 50MB
+      maxContentLength: 50 * 1024 * 1024, // 50MB
       proxy: false,
       httpsAgent: new https.Agent({
         rejectUnauthorized: false,
@@ -133,11 +135,23 @@ export class InnovatricsService {
     this.client.interceptors.response.use(
       response => response,
       error => {
-        console.error('Innovatrics API Error:', {
-          status: error.response?.status,
-          data: error.response?.data,
-          message: error.message,
-        });
+        console.error('=== INNOVATRICS API ERROR (DETAILED) ===');
+        console.error('Status:', error.response?.status);
+        console.error('Status Text:', error.response?.statusText);
+        console.error('Error Data:', JSON.stringify(error.response?.data, null, 2));
+        console.error('Error Headers:', error.response?.headers);
+        console.error('Request URL:', error.config?.url);
+        console.error('Request Method:', error.config?.method);
+        console.error('Request Data Preview:', 
+          error.config?.data ? 
+            (typeof error.config.data === 'string' ? 
+              error.config.data.substring(0, 500) + '...' : 
+              JSON.stringify(error.config.data, null, 2).substring(0, 500) + '...') 
+            : 'N/A'
+        );
+        console.error('Full Error Message:', error.message);
+        console.error('Error Stack:', error.stack);
+        console.error('=========================================');
         return Promise.reject(error);
       }
     );
