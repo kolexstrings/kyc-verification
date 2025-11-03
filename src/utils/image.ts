@@ -1,6 +1,13 @@
 export interface NormalizedImage {
-  base64: string;
+  base64?: string;
   mimeType?: string;
+  url?: string;
+  publicId?: string;
+  format?: string;
+  bytes?: number;
+  width?: number;
+  height?: number;
+  resourceType?: string;
 }
 
 const DATA_URI_REGEX = /^data:(?<mime>[^;]+);base64,(?<data>.+)$/;

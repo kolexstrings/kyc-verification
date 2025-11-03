@@ -3,6 +3,8 @@ import https from 'https';
 import { config } from '../config/env';
 import { withRetry, RetryOptions } from '../utils/retry';
 
+export type InnovatricsImagePayload = string | { url: string };
+
 export interface CustomerStoreRequest {
   externalId?: string;
   onboardingStatus: 'IN_PROGRESS' | 'FINISHED';
@@ -16,7 +18,7 @@ export interface CreateCustomerResponse {
 }
 
 export interface CreateFaceRequest {
-  image: string; // base64 encoded image
+  image: InnovatricsImagePayload;
 }
 
 export interface CreateFaceResponse {
@@ -63,8 +65,8 @@ export interface LivenessChallengeResponse {
 
 export interface DocumentVerificationRequest {
   customerId: string;
-  frontImage: string;
-  backImage?: string;
+  frontImage: InnovatricsImagePayload;
+  backImage?: InnovatricsImagePayload;
   documentType?: string;
   issuingCountry?: string;
   onRetry?: (params: {
@@ -169,6 +171,16 @@ export class InnovatricsService {
     }
   }
 
+  private buildImagePayload(image: InnovatricsImagePayload) {
+    if (typeof image === 'string') {
+      return {
+        data: this.normalizeBase64Image(image),
+      };
+    }
+
+    return image;
+  }
+
   async storeCustomer(
     customerId: string,
     payload: CustomerStoreRequest
@@ -194,10 +206,10 @@ export class InnovatricsService {
   }
 
   // Face Biometrics
-  async detectFace(imageData: string): Promise<CreateFaceResponse> {
+  async detectFace(imageData: InnovatricsImagePayload): Promise<CreateFaceResponse> {
     try {
       const response = await this.client.post('/faces', {
-        image: imageData, // base64 encoded
+        image: this.buildImagePayload(imageData),
       });
       return response.data;
     } catch (error: any) {
@@ -371,6 +383,9 @@ export class InnovatricsService {
   ): Promise<DocumentVerificationResult> {
     const { customerId, frontImage, backImage, documentType, issuingCountry } = request;
 
+    const frontImagePayload = this.buildImagePayload(frontImage);
+    const backImagePayload = backImage ? this.buildImagePayload(backImage) : undefined;
+
     try {
       const classificationAdvice: Record<string, any> = {};
       if (documentType) {
@@ -433,9 +448,7 @@ export class InnovatricsService {
       const frontPageResponse = await withRetry(
         () =>
           this.client.put(`/customers/${customerId}/document/pages`, {
-            image: {
-              data: this.normalizeBase64Image(frontImage),
-            },
+            image: frontImagePayload,
             advice: {
               classification: {
                 pageTypes: ['front'],
@@ -466,9 +479,7 @@ export class InnovatricsService {
         const backPageResponse = await withRetry(
           () =>
             this.client.put(`/customers/${customerId}/document/pages`, {
-              image: {
-                data: this.normalizeBase64Image(backImage),
-              },
+              image: backImagePayload,
               advice: {
                 classification: {
                   pageTypes: ['back'],
@@ -569,13 +580,13 @@ export class InnovatricsService {
   // Selfie Management (Customer-scoped)
   async uploadSelfie(
     customerId: string,
-    selfieData: string
+    selfieData: InnovatricsImagePayload
   ): Promise<{ id: string }> {
     try {
       const response = await this.client.put(
         `/customers/${customerId}/selfie`,
         {
-          image: selfieData, // base64 encoded
+          image: this.buildImagePayload(selfieData),
         }
       );
       return response.data;

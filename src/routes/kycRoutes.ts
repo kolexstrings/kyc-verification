@@ -1,16 +1,19 @@
 import { Router } from 'express';
 import { body } from 'express-validator';
 import { KYCVerificationController } from '../controllers/kycController';
+import { uploadKycMedia } from '../middleware/kycUpload';
 
 // Validation middleware
 const validateKYCProfile = [
   body('identificationDocumentImage')
-    .isArray({ min: 1 })
-    .withMessage('identificationDocumentImage must be a non-empty array'),
+    .optional()
+    .custom(value => Array.isArray(value) || typeof value === 'string')
+    .withMessage('identificationDocumentImage must be provided as files or JSON array/string'),
   body('image')
+    .optional()
     .isString()
     .isLength({ min: 1 })
-    .withMessage('image (main selfie) is required'),
+    .withMessage('image must be provided when no selfie file is uploaded'),
   body('name')
     .isString()
     .isLength({ min: 1, max: 100 })
@@ -199,7 +202,9 @@ const router = Router();
  *                   type: string
  *                   example: "KYC verification completed successfully"
  */
-router.post('/verify',
+router.post(
+  '/verify',
+  uploadKycMedia,
   validateKYCProfile,
   handleValidationErrors,
   KYCVerificationController.processKYCProfile

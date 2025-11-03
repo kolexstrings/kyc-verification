@@ -47,10 +47,15 @@ export class VerificationController {
       // Process document using Innovatrics customer-scoped endpoints
       const normalizedFront = normalizeImagePayload(frontImage);
       const normalizedBack = backImage ? normalizeImagePayload(backImage) : undefined;
+      
+      if (!normalizedFront.base64) {
+        return ResponseHandler.validationError(res, ['Invalid front image format']);
+      }
+      
       const documentResult = await innovatricsClient.verifyDocument({
         customerId,
         frontImage: normalizedFront.base64,
-        ...(normalizedBack ? { backImage: normalizedBack.base64 } : {}),
+        ...(normalizedBack?.base64 ? { backImage: normalizedBack.base64 } : {}),
         ...(documentType ? { documentType } : {}),
       });
 
@@ -75,6 +80,10 @@ export class VerificationController {
       }
 
       const normalizedImage = normalizeImagePayload(image);
+      
+      if (!normalizedImage.base64) {
+        return ResponseHandler.validationError(res, ['Invalid image format']);
+      }
 
       // Submit liveness data (use provided challengeId or create new challenge)
       let finalChallengeId = challengeId;
@@ -113,6 +122,11 @@ export class VerificationController {
 
       // Detect face
       const normalizedImage = normalizeImagePayload(image);
+      
+      if (!normalizedImage.base64) {
+        return ResponseHandler.validationError(res, ['Invalid image format']);
+      }
+      
       const faceResult = await innovatricsClient.detectFace(normalizedImage.base64);
 
       // Check for face mask
@@ -192,6 +206,11 @@ export class VerificationController {
 
       // Upload selfie
       const normalizedImage = normalizeImagePayload(image);
+      
+      if (!normalizedImage.base64) {
+        return ResponseHandler.validationError(res, ['Invalid image format']);
+      }
+      
       const selfieResult = await innovatricsClient.uploadSelfie(customerId, normalizedImage.base64);
 
       return ResponseHandler.success(res, {
