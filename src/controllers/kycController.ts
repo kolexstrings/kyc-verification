@@ -132,10 +132,16 @@ export class KYCVerificationController {
       const userIdForTracking = kycData.userId || externalId;
 
       // Step 2: Store customer in Trust Platform with external ID
+      console.log('Linking Innovatrics customer to external platform ID', {
+        innovatricsCustomerId: customer.id,
+        externalId,
+        onboardingStatus: 'IN_PROGRESS'
+      });
       await innovatricsClient.storeCustomer(customer.id, {
         externalId,
         onboardingStatus: 'IN_PROGRESS'
       });
+      console.log('Innovatrics acknowledged customer linkage');
 
       await initializeOnboardingRecord({
         userId: userIdForTracking,
@@ -286,10 +292,8 @@ export class KYCVerificationController {
           console.log('='.repeat(70));
           await innovatricsClient.uploadSelfie(customerId, supplementalSelfieSource.innovatrics);
 
-          // Then evaluate liveness with deepfake detection
-          // TODO: surface liveness challenge metadata (challengeId/instructions) for persistence
+          // Then evaluate passive liveness with deepfake detection (backend-only)
           const livenessResult = await innovatricsClient.evaluateLiveness(customerId, {
-            type: kycData.challengeType || 'passive',
             deepfakeCheck: true // Enable deepfake detection
           });
 
@@ -303,11 +307,12 @@ export class KYCVerificationController {
             })
           };
           console.log('\nSUCCESS: Liveness check completed');
-          console.log('   Status:', livenessResult.status.toUpperCase());
+          console.log('   Status:', livenessResult.status ? livenessResult.status.toUpperCase() : 'N/A');
           console.log('   Confidence:', (livenessResult.confidence * 100).toFixed(1) + '%');
           if (livenessResult.isDeepfake !== undefined) {
             console.log('   Deepfake Detection:', livenessResult.isDeepfake ? 'DETECTED' : 'PASSED');
           }
+          console.log('   Full result:', JSON.stringify(livenessResult, null, 2));
           console.log('='.repeat(70) + '\n');
 
           await recordLivenessResult(customerId, {
@@ -321,10 +326,15 @@ export class KYCVerificationController {
         results.updatedAt = new Date();
 
         await markFinished(customerId);
+        console.log('Updating Innovatrics customer onboarding status to FINISHED', {
+          innovatricsCustomerId: customerId,
+          externalId
+        });
         await innovatricsClient.storeCustomer(customerId, {
           externalId,
           onboardingStatus: 'FINISHED',
         });
+        console.log('Innovatrics confirmed onboarding status update');
 
         // Final success response
         console.log('\n' + '='.repeat(70));
@@ -333,7 +343,7 @@ export class KYCVerificationController {
         console.log('   Customer ID:', customerId);
         console.log('   Document Verified:', results.documentVerification ? 'YES' : 'NO');
         console.log('   Selfie Uploaded:', results.selfieUpload ? 'YES' : 'NO');
-        console.log('   Liveness Check:', results.livenessCheck ? results.livenessCheck.status.toUpperCase() : 'SKIPPED');
+        console.log('   Liveness Check:', results.livenessCheck ? (results.livenessCheck.status ? results.livenessCheck.status.toUpperCase() : 'INCONCLUSIVE') : 'SKIPPED');
         console.log('   Face Match:', (results.faceComparison?.score ?? 0) >= 0.7 ? 'PASSED' : 'FAILED');
         console.log('='.repeat(70) + '\n');
         

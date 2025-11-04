@@ -1,5 +1,3 @@
-how do -- Onboarding persistence schema for Supabase
--- Run this in the Supabase SQL editor or via psql
 
 create table if not exists customer_onboarding (
   id uuid primary key default gen_random_uuid(),

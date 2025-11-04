@@ -52,9 +52,41 @@ export interface LivenessCheckOptions {
   // Add other liveness options as needed
 }
 
+export type LivenessChallengeType =
+  | 'EYE_GAZE_LIVENESS'
+  | 'SMILE_LIVENESS'
+  | 'MAGNIFEYE_LIVENESS';
+
 export interface CreateLivenessRequest {
-  type?: 'passive' | 'motion' | 'expression'; // Analysis approach, not user interaction
+  type?: LivenessChallengeType; // Analysis approach, not user interaction
   options?: LivenessCheckOptions;
+}
+
+export const DEFAULT_LIVENESS_CHALLENGE: LivenessChallengeType = 'EYE_GAZE_LIVENESS';
+
+export function normalizeLivenessChallengeType(
+  rawType?: string | null
+): LivenessChallengeType {
+  const normalized = (rawType ?? '').trim().toUpperCase();
+
+  switch (normalized) {
+    case 'PASSIVE_LIVENESS':
+    case 'PASSIVE':
+      return 'EYE_GAZE_LIVENESS';
+    case 'EYE_GAZE_LIVENESS':
+    case 'EYE_GAZE':
+    case 'MOTION':
+      return 'EYE_GAZE_LIVENESS';
+    case 'SMILE_LIVENESS':
+    case 'SMILE':
+    case 'EXPRESSION':
+      return 'SMILE_LIVENESS';
+    case 'MAGNIFEYE_LIVENESS':
+    case 'MAGNIFEYE':
+      return 'MAGNIFEYE_LIVENESS';
+    default:
+      return DEFAULT_LIVENESS_CHALLENGE;
+  }
 }
 
 export interface LivenessChallengeResponse {
@@ -298,7 +330,7 @@ export class InnovatricsService {
         if (challengeRequest.type) {
           payload.type = challengeRequest.type;
         }
-        if (challengeRequest.options) {
+        if (challengeRequest.options && Object.keys(challengeRequest.options).length > 0) {
           payload.options = challengeRequest.options;
         }
       }
@@ -313,6 +345,33 @@ export class InnovatricsService {
     } catch (error: any) {
       throw new Error(
         `Failed to create liveness challenge: ${error.response?.data?.message || error.message}`
+      );
+    }
+  }
+
+  async ensureLivenessRecord(customerId: string): Promise<void> {
+    try {
+      await this.client.put(`/customers/${customerId}/liveness`);
+      console.log('Liveness record initialized for customer:', customerId);
+    } catch (error: any) {
+      throw new Error(
+        `Failed to initialize liveness record: ${error.response?.data?.message || error.message}`
+      );
+    }
+  }
+
+  async uploadAdditionalSelfieLiveness(
+    customerId: string,
+    selfieData: InnovatricsImagePayload
+  ): Promise<void> {
+    try {
+      await this.client.post(`/customers/${customerId}/liveness/selfies`, {
+        image: this.buildImagePayload(selfieData),
+      });
+      console.log('Additional liveness selfie uploaded for customer:', customerId);
+    } catch (error: any) {
+      throw new Error(
+        `Failed to upload additional selfie: ${error.response?.data?.message || error.message}`
       );
     }
   }
@@ -348,7 +407,7 @@ export class InnovatricsService {
   }
 
   /**
-   * Evaluate liveness with optional deepfake detection
+   * Evaluate passive liveness (backend-only, no interactive challenge)
    * @param customerId - The customer ID
    * @param options - Liveness check options
    * @returns Liveness check results
@@ -356,8 +415,8 @@ export class InnovatricsService {
   async evaluateLiveness(
     customerId: string,
     options: {
-      type?: 'passive' | 'motion' | 'expression';
       deepfakeCheck?: boolean;
+      additionalSelfies?: InnovatricsImagePayload[];
     } = {}
   ): Promise<{
     confidence: number;
@@ -366,41 +425,77 @@ export class InnovatricsService {
     deepfakeConfidence?: number;
   }> {
     try {
-      // Create a liveness challenge
-      const challenge = await this.createLivenessChallenge(customerId, {
-        type: options.type || 'passive',
-        options: {
-          deepfakeCheck: options.deepfakeCheck,
-        },
-      });
+      // Ensure liveness record exists
+      await this.ensureLivenessRecord(customerId);
 
-      // Get the selfie that was previously uploaded
-      const selfie = await this.getSelfie(customerId);
-
-      // Submit the selfie for liveness check
-      const livenessOptions: LivenessCheckOptions = {};
-      if (options.deepfakeCheck !== undefined) {
-        livenessOptions.deepfakeCheck = options.deepfakeCheck;
+      // Upload any additional selfie frames for better liveness detection
+      if (options.additionalSelfies && options.additionalSelfies.length > 0) {
+        for (const selfie of options.additionalSelfies) {
+          await this.uploadAdditionalSelfieLiveness(customerId, selfie);
+        }
       }
 
-      const result = await this.submitLivenessData(customerId, {
-        image: selfie.image,
-        challengeId: challenge.challengeId,
-        options: livenessOptions,
-      });
-
-      const response = {
-        confidence: result.confidence,
-        status: result.status as 'live' | 'not_live' | 'suspicious',
-        ...(result.isDeepfake !== undefined && {
-          isDeepfake: result.isDeepfake,
-        }),
-        ...(result.deepfakeConfidence !== undefined && {
-          deepfakeConfidence: result.deepfakeConfidence,
-        }),
+      // Use passive evaluation endpoint (backend-only, no interactive challenge)
+      const payload: any = {
+        type: 'PASSIVE_LIVENESS',
       };
 
-      return response;
+      console.log('DEBUG: Passive liveness evaluation payload:', JSON.stringify(payload));
+
+      const response = await this.client.post(
+        `/customers/${customerId}/liveness/evaluation`,
+        payload
+      );
+
+      const result = response.data;
+      console.log('Passive liveness raw response:', JSON.stringify(result, null, 2));
+
+      // Check for errors in response
+      if (result.errorCode) {
+        console.warn('⚠️  Passive liveness returned error:', result.errorCode);
+        if (result.errorCode === 'NOT_ENOUGH_DATA') {
+          console.warn('   This usually means:');
+          console.warn('   - Selfie image quality is too low');
+          console.warn('   - Face not clearly visible');
+          console.warn('   - Image too small (recommend 1800px+ with clear face)');
+          console.warn('   - Consider uploading additional selfie frames via additionalSelfies option');
+        }
+        // Return default values when not enough data
+        return {
+          confidence: 0,
+          status: 'not_live' as const,
+        };
+      }
+
+      // If deepfake check requested, use extended evaluation
+      if (options.deepfakeCheck) {
+        const extendedPayload = {
+          type: 'DEEPFAKE',
+          livenessResources: ['PASSIVE'],
+        };
+
+        console.log('DEBUG: Extended deepfake evaluation payload:', JSON.stringify(extendedPayload));
+
+        const extendedResponse = await this.client.post(
+          `/customers/${customerId}/liveness/evaluation/extended`,
+          extendedPayload
+        );
+
+        const extendedResult = extendedResponse.data;
+        console.log('Deepfake raw response:', JSON.stringify(extendedResult, null, 2));
+
+        return {
+          confidence: result.confidence || 0,
+          status: result.status as 'live' | 'not_live' | 'suspicious',
+          isDeepfake: extendedResult.isDeepfake,
+          deepfakeConfidence: extendedResult.confidence,
+        };
+      }
+
+      return {
+        confidence: result.confidence || 0,
+        status: result.status as 'live' | 'not_live' | 'suspicious',
+      };
     } catch (error: any) {
       throw new Error(`Liveness evaluation failed: ${error.message}`);
     }
