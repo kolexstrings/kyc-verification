@@ -70,16 +70,19 @@ kyc-verification/
 ### Verification Sessions
 
 #### Session Management
+
 - `POST /api/verification/session` - Create new verification session
 - `GET /api/verification/:sessionId/status` - Get session status and results
 - `DELETE /api/verification/:sessionId` - Delete/terminate session
 
 #### Verification Steps
+
 - `POST /api/verification/:sessionId/document` - Upload document images
 - `POST /api/verification/:sessionId/liveness` - Perform liveness check
 - `POST /api/verification/:sessionId/face-match` - Perform face matching
 
 ### System
+
 - `GET /health` - Health check endpoint
 
 ## Verification Flow
@@ -125,6 +128,7 @@ The API includes comprehensive OpenAPI 3.0 specification that can be used with e
 - **Download for Postman/Swagger UI**: Use the JSON endpoint to import into tools
 
 The OpenAPI specification includes:
+
 - ✅ **Complete endpoint documentation** - All request/response schemas
 - ✅ **Parameter descriptions** - What each field does
 - ✅ **Example requests/responses** - Copy-paste ready examples
@@ -136,6 +140,7 @@ The OpenAPI specification includes:
 A complete Postman collection is provided for easy API testing:
 
 **Import Instructions:**
+
 1. Open Postman
 2. Click "Import" button
 3. Select "Upload Files"
@@ -143,6 +148,7 @@ A complete Postman collection is provided for easy API testing:
 5. The collection will be imported with all endpoints ready to test
 
 **Collection Features:**
+
 - ✅ **Pre-configured requests** - All endpoints with proper headers and examples
 - ✅ **Variable management** - Session ID is automatically captured and reused
 - ✅ **Environment variables** - Easy switching between dev/prod
@@ -161,6 +167,7 @@ A complete Postman collection is provided for easy API testing:
 ### External Documentation Tools
 
 **For Interactive Testing:**
+
 - **Swagger Editor**: Copy the JSON from `/api-docs.json` and paste into [editor.swagger.io](https://editor.swagger.io)
 - **Postman**: Import the JSON from `/api-docs.json` as an API specification
 - **Insomnia**: Import the JSON for automatic request generation
@@ -220,9 +227,7 @@ Use `image/png` if the source file is a PNG.
      "surname": "Doe",
      "dateOfBirth": "1990-01-01",
      "userId": "user_123456",
-     "identificationDocumentImage": [
-       "{{doc_front_datauri}}"
-     ],
+     "identificationDocumentImage": ["{{doc_front_datauri}}"],
      "image": "{{profile_image_datauri}}",
      "selfieImages": [
        "{{selfie1_datauri}}",
@@ -249,13 +254,18 @@ newman run ./collections/kyc.postman_collection.json \
 To safeguard against stray carriage returns or newlines inside the data URI variables, add a pre-request script at the collection, folder, or request level in Postman:
 
 ```javascript
-['doc_front_datauri', 'profile_image_datauri', 'selfie1_datauri', 'selfie2_datauri', 'selfie3_datauri']
-  .forEach((key) => {
-    const value = pm.environment.get(key);
-    if (typeof value === 'string') {
-      pm.environment.set(key, value.replace(/[\r\n]/g, '').trim());
-    }
-  });
+[
+  'doc_front_datauri',
+  'profile_image_datauri',
+  'selfie1_datauri',
+  'selfie2_datauri',
+  'selfie3_datauri',
+].forEach(key => {
+  const value = pm.environment.get(key);
+  if (typeof value === 'string') {
+    pm.environment.set(key, value.replace(/[\r\n]/g, '').trim());
+  }
+});
 ```
 
 This script runs immediately before the request and re-saves each environment variable without control characters, preventing JSON parsing errors on the backend.
@@ -301,6 +311,7 @@ sequenceDiagram
 ## Quick Start
 
 ### Prerequisites
+
 - Node.js (v16 or higher)
 - Yarn package manager
 - Supabase project (PostgreSQL) for onboarding persistence
@@ -308,6 +319,7 @@ sequenceDiagram
 ### Installation
 
 1. **Clone and install dependencies:**
+
    ```bash
    git clone <repository-url>
    cd kyc-verification
@@ -315,11 +327,13 @@ sequenceDiagram
    ```
 
 2. **Configure environment variables:**
+
    ```bash
    cp .env.example .env
    ```
 
    Edit `.env` with your actual values:
+
    ```env
    PORT=3000
 
@@ -335,13 +349,14 @@ sequenceDiagram
 
    > **Note:** `DATABASE_URL` should point at the Supabase pooled connection (port `6543`) and include `?pgbouncer=true&sslmode=require`. `DIRECT_URL` must use the direct connection (port `5432`) for Prisma migrations.
 
-
 3. **Build the project:**
+
    ```bash
    yarn build
    ```
 
 4. **Start development server:**
+
    ```bash
    yarn dev
    ```
@@ -358,17 +373,21 @@ sequenceDiagram
 ### Database Setup (Prisma + Supabase)
 
 1. **Install Prisma client** (already handled via `yarn install`, but run again if needed):
+
    ```bash
    npx prisma generate
    ```
 
 2. **Verify connectivity** (requires `psql`):
+
    ```bash
    psql "$DIRECT_URL"
    ```
+
    - Successful connection confirms credentials and network access.
 
 3. **Apply migrations** (creates onboarding tables):
+
    ```bash
    npx prisma migrate dev --name init_onboarding_schema
    ```
@@ -381,6 +400,7 @@ sequenceDiagram
    ```
 
 If migrations fail with `P1001` (cannot reach database), double-check:
+
 - `DIRECT_URL` uses the correct password and includes `sslmode=require`.
 - Outbound TCP on ports `5432` and `6543` is allowed from your network.
 - Supabase project is running (check Status in Supabase dashboard).
@@ -397,16 +417,17 @@ If migrations fail with `P1001` (cannot reach database), double-check:
 
 ## Environment Variables
 
-| Variable | Description | Required | Default |
-|----------|-------------|----------|---------|
-| `PORT` | Server port number | No | `3000` |
-| `INNOVATRICS_BASE_URL` | Innovatrics DIS API base URL | Yes | - |
-| `INNOVATRICS_API_KEY` | Innovatrics API authentication key | Yes | - |
-| `INNOVATRICS_API_SECRET` | Innovatrics API secret key | Yes | - |
+| Variable                 | Description                        | Required | Default |
+| ------------------------ | ---------------------------------- | -------- | ------- |
+| `PORT`                   | Server port number                 | No       | `3000`  |
+| `INNOVATRICS_BASE_URL`   | Innovatrics DIS API base URL       | Yes      | -       |
+| `INNOVATRICS_API_KEY`    | Innovatrics API authentication key | Yes      | -       |
+| `INNOVATRICS_API_SECRET` | Innovatrics API secret key         | Yes      | -       |
 
 ## API Usage Examples
 
 ### Create Verification Session
+
 ```bash
 curl -X POST http://localhost:3000/api/verification/session \
   -H "Content-Type: application/json" \
@@ -416,6 +437,7 @@ curl -X POST http://localhost:3000/api/verification/session \
 ```
 
 **Response:**
+
 ```json
 {
   "success": true,
@@ -429,6 +451,7 @@ curl -X POST http://localhost:3000/api/verification/session \
 ```
 
 ### Upload Document
+
 ```bash
 curl -X POST http://localhost:3000/api/verification/session_abc123/document \
   -H "Content-Type: application/json" \
@@ -440,6 +463,7 @@ curl -X POST http://localhost:3000/api/verification/session_abc123/document \
 ```
 
 ### Perform Liveness Check
+
 ```bash
 curl -X POST http://localhost:3000/api/verification/session_abc123/liveness \
   -H "Content-Type: application/json" \
@@ -449,16 +473,19 @@ curl -X POST http://localhost:3000/api/verification/session_abc123/liveness \
 ```
 
 ### Perform Face Matching
+
 ```bash
 curl -X POST http://localhost:3000/api/verification/session_abc123/face-match
 ```
 
 ### Get Verification Status
+
 ```bash
 curl -X GET http://localhost:3000/api/verification/session_abc123/status
 ```
 
 **Response:**
+
 ```json
 {
   "success": true,
@@ -497,6 +524,7 @@ curl -X GET http://localhost:3000/api/verification/session_abc123/status
 ## Development Guidelines
 
 ### Code Style
+
 - Use TypeScript for all new code
 - Follow ESLint rules (run `yarn lint` to check)
 - Format code with Prettier (`yarn format`)
@@ -504,35 +532,27 @@ curl -X GET http://localhost:3000/api/verification/session_abc123/status
 - Add JSDoc comments for public APIs
 
 ### Adding New Endpoints
+
 1. Create controller in `src/controllers/`
 2. Add routes in `src/routes/` with proper validation
 3. Register routes in `src/app.ts`
 4. Add proper error handling and validation
 
 ### Testing
+
 Tests should be added to `**/*.test.ts` or `**/*.spec.ts` files (excluded from TypeScript compilation).
 
 ## Deployment
 
 ### Production Checklist
+
 - [ ] Set `NODE_ENV=production`
 - [ ] Configure production Innovatrics DIS credentials
 - [ ] Set up reverse proxy (nginx recommended)
 - [ ] Configure SSL/TLS certificates
 - [ ] Set up monitoring and logging
 - [ ] Configure environment-specific CORS origins
-- [ ] Set up proper database for session storage (MongoDB/PostgreSQL)
-
-### Docker Deployment
-```dockerfile
-FROM node:18-alpine
-WORKDIR /app
-COPY package*.json ./
-RUN yarn install --production
-COPY dist ./dist
-EXPOSE 3000
-CMD ["yarn", "start"]
-```
+- [ ] Set up proper database for session storage (PostgreSQL)
 
 ## Contributing
 
