@@ -1,19 +1,18 @@
 import { Router } from 'express';
 import { body } from 'express-validator';
 import { KYCVerificationController } from '../controllers/kycController';
-import { uploadKycMedia } from '../middleware/kycUpload';
 
 // Validation middleware
 const validateKYCProfile = [
   body('identificationDocumentImage')
     .optional()
     .custom(value => Array.isArray(value) || typeof value === 'string')
-    .withMessage('identificationDocumentImage must be provided as files or JSON array/string'),
+    .withMessage('identificationDocumentImage must be provided as base64 JSON array/string'),
   body('image')
     .optional()
     .isString()
     .isLength({ min: 1 })
-    .withMessage('image must be provided when no selfie file is uploaded'),
+    .withMessage('image must be provided as a base64 string'),
   body('name')
     .isString()
     .isLength({ min: 1, max: 100 })
@@ -78,20 +77,21 @@ const router = Router();
  *             properties:
  *               identificationDocumentImage:
  *                 type: array
+ *                 minItems: 1
  *                 items:
  *                   type: string
- *                 description: Array of base64 encoded document images (front, back)
- *                 example: ["data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQ..."]
+ *                 description: Array of base64 encoded document images (front, optional back). Accepts plain base64 or data URI string (data:image/jpeg;base64,...)
+ *                 example: ["data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQ...front", "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQ...back"]
  *               image:
  *                 type: string
  *                 description: Main profile/selfie image (base64 encoded)
- *                 example: "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQ..."
+ *                 example: "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQ...selfie"
  *               selfieImages:
  *                 type: array
  *                 items:
  *                   type: string
- *                 description: Additional selfie images for passive liveness analysis (AI analyzes for natural human characteristics)
- *                 example: ["data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQ..."]
+ *                 description: Optional additional selfie frames (base64) for passive liveness evaluation
+ *                 example: ["data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQ...liveness"]
  *               name:
  *                 type: string
  *                 description: User's first name
@@ -102,11 +102,11 @@ const router = Router();
  *                 example: "Doe"
  *               dateOfBirth:
  *                 type: string
- *                 description: User's date of birth
+ *                 description: User's date of birth (ISO 8601 recommended)
  *                 example: "1990-01-01"
  *               userId:
  *                 type: string
- *                 description: Application user ID for better tracking (optional, will auto-generate if not provided)
+ *                 description: Optional application user identifier. When provided, it is used as the Innovatrics externalId and persisted with onboarding results.
  *                 example: "user_123456"
  *               documentType:
  *                 type: string
@@ -118,6 +118,19 @@ const router = Router();
  *                 enum: [passive, motion, expression]
  *                 description: Type of liveness analysis (optional, defaults to passive)
  *                 example: "passive"
+ *             example:
+ *               identificationDocumentImage:
+ *                 - "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQ...front"
+ *                 - "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQ...back"
+ *               image: "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQ...selfie"
+ *               selfieImages:
+ *                 - "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQ...liveness"
+ *               name: "John"
+ *               surname: "Doe"
+ *               dateOfBirth: "1990-01-01"
+ *               userId: "user_123456"
+ *               documentType: "passport"
+ *               challengeType: "passive"
  *               # All other KYCProfile fields are optional for verification
  *     responses:
  *       200:
@@ -136,6 +149,13 @@ const router = Router();
  *                     customerId:
  *                       type: string
  *                       example: "cust_abc123"
+ *                     externalId:
+ *                       type: string
+ *                       example: "user_123456"
+ *                     userId:
+ *                       type: string
+ *                       nullable: true
+ *                       example: "user_123456"
  *                     documentVerification:
  *                       type: object
  *                       properties:
@@ -204,7 +224,6 @@ const router = Router();
  */
 router.post(
   '/verify',
-  uploadKycMedia,
   validateKYCProfile,
   handleValidationErrors,
   KYCVerificationController.processKYCProfile

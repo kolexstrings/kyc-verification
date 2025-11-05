@@ -6,8 +6,6 @@ import {
   DocumentVerificationResult,
   InnovatricsImagePayload,
 } from '../services/innovatricsClient';
-import { uploadImageFromBuffer } from '../services/cloudinaryService';
-import type { KycUploadRequestFiles } from '../middleware/kycUpload';
 import sharp from 'sharp';
 import {
   initializeOnboardingRecord,
@@ -66,6 +64,8 @@ export interface KYCProfile {
 
 export interface KYCVerificationResult {
   customerId: string;
+  externalId: string;
+  userId?: string;
   documentVerification?: DocumentVerificationResult;
   selfieUpload?: {
     id: string;
@@ -104,18 +104,17 @@ export class KYCVerificationController {
     let customerId: string | null = null;
 
     try {
-      const files = (req.files as KycUploadRequestFiles | undefined) ?? {};
       const kycData: KYCProfile = req.body;
       const documentImagesFromBody = toStringArray(kycData.identificationDocumentImage);
       const selfieImagesFromBody = toStringArray(kycData.selfieImages);
 
-      const hasDocumentFront = Boolean(files.documentFront?.length || documentImagesFromBody[0]);
-      const hasPrimarySelfie = Boolean(files.selfiePrimary?.length || kycData.image);
+      const hasDocumentFront = Boolean(documentImagesFromBody[0]);
+      const hasPrimarySelfie = Boolean(kycData.image);
 
       if (!hasDocumentFront || !hasPrimarySelfie) {
         return ResponseHandler.validationError(res, [
-          !hasDocumentFront ? 'Document front image must be provided as a file or base64 string' : undefined,
-          !hasPrimarySelfie ? 'Primary selfie image must be provided as a file or base64 string' : undefined,
+          !hasDocumentFront ? 'Document front image must be provided as a base64 string' : undefined,
+          !hasPrimarySelfie ? 'Primary selfie image must be provided as a base64 string' : undefined,
         ].filter((msg): msg is string => Boolean(msg)));
       }
 
@@ -128,8 +127,9 @@ export class KYCVerificationController {
       console.log('\nSUCCESS: Customer created with ID:', customerId);
       console.log('='.repeat(70) + '\n');
 
-      const externalId = kycData.userId || `${kycData.name}_${kycData.surname}_${Date.now()}`;
-      const userIdForTracking = kycData.userId || externalId;
+      const providedUserId = typeof kycData.userId === 'string' ? kycData.userId.trim() : '';
+      const externalId = providedUserId || `${kycData.name}_${kycData.surname}_${Date.now()}`;
+      const userIdForTracking = externalId;
 
       // Step 2: Store customer in Trust Platform with external ID
       console.log('Linking Innovatrics customer to external platform ID', {
@@ -151,6 +151,8 @@ export class KYCVerificationController {
 
       const results: KYCVerificationResult = {
         customerId,
+        externalId,
+        ...(providedUserId ? { userId: providedUserId } : {}),
         overallStatus: 'pending',
         createdAt: new Date(),
         updatedAt: new Date()
@@ -162,10 +164,7 @@ export class KYCVerificationController {
         console.log('STEP 2: Uploading and verifying document pages');
         console.log('='.repeat(70));
         const documentFront = await resolveImageSource({
-          file: files.documentFront?.[0],
           base64: documentImagesFromBody[0],
-          defaultFileName: `${userIdForTracking}_document_front`,
-          tags: ['kyc', 'document', 'front'],
         });
 
         if (!documentFront) {
@@ -173,10 +172,7 @@ export class KYCVerificationController {
         }
 
         const documentBack = await resolveImageSource({
-          file: files.documentBack?.[0],
           base64: documentImagesFromBody[1],
-          defaultFileName: `${userIdForTracking}_document_back`,
-          tags: ['kyc', 'document', 'back'],
         });
 
         const documentResult = await innovatricsClient.verifyDocument({
@@ -215,10 +211,7 @@ export class KYCVerificationController {
         console.log('STEP 3: Uploading selfie image');
         console.log('='.repeat(70));
         const primarySelfieSource = await resolveImageSource({
-          file: files.selfiePrimary?.[0],
           base64: kycData.image,
-          defaultFileName: `${userIdForTracking}_selfie_primary`,
-          tags: ['kyc', 'selfie', 'primary'],
         });
 
         if (!primarySelfieSource) {
@@ -278,10 +271,7 @@ export class KYCVerificationController {
 
         // Step 6: Liveness check with deepfake detection (using first selfie image)
         const supplementalSelfieSource = await resolveImageSource({
-          file: files.selfieImages?.[0],
           base64: selfieImagesFromBody[0],
-          defaultFileName: `${userIdForTracking}_selfie_liveness_1`,
-          tags: ['kyc', 'selfie', 'liveness'],
         });
 
         if (supplementalSelfieSource) {
@@ -403,10 +393,7 @@ export class KYCVerificationController {
 }
 
 interface ResolveImageOptions {
-  file?: Express.Multer.File | undefined;
   base64?: string | undefined;
-  defaultFileName: string;
-  tags?: string[] | undefined;
 }
 
 interface ResolvedImageSource {
@@ -415,21 +402,16 @@ interface ResolvedImageSource {
 }
 
 async function resolveImageSource(options: ResolveImageOptions): Promise<ResolvedImageSource | null> {
-  const { file, base64, defaultFileName, tags } = options;
+  const { base64 } = options;
 
   let buffer: Buffer | null = null;
-  let mimeType: string | undefined;
 
-  if (file && file.buffer) {
-    buffer = file.buffer;
-    mimeType = file.mimetype;
-  } else if (base64) {
+  if (base64) {
     const normalized = normalizeImagePayload(base64);
     if (!normalized.base64) {
       return null;
     }
     buffer = Buffer.from(normalized.base64, 'base64');
-    mimeType = normalized.mimeType;
   }
 
   if (!buffer) {
@@ -486,43 +468,22 @@ async function resolveImageSource(options: ResolveImageOptions): Promise<Resolve
   const resizedMetadata = await sharp(resizedBuffer).metadata();
   console.log(`Resized image: ${resizedMetadata.width}x${resizedMetadata.height}, size: ${resizedBuffer.length} bytes`);
 
-  const uploadOptions: Parameters<typeof uploadImageFromBuffer>[2] = {};
-  if (tags && tags.length > 0) {
-    uploadOptions.tags = tags;
-  }
-
-  const uploadResult = await uploadImageFromBuffer(
-    resizedBuffer, // Upload resized version to Cloudinary
-    generateUploadFileName(file, defaultFileName),
-    uploadOptions
-  );
-
   // Convert resized buffer to base64 for Innovatrics (they don't support URLs for documents)
   const base64Data = resizedBuffer.toString('base64');
 
   const normalized: NormalizedImage = {
-    url: uploadResult.secureUrl,
-    publicId: uploadResult.publicId,
-    format: uploadResult.format,
+    base64: base64Data,
+    mimeType: 'image/jpeg',
     bytes: resizedBuffer.length, // Use resized buffer size
     resourceType: 'image',
-    base64: base64Data,
-    ...(mimeType ? { mimeType: 'image/jpeg' } : { mimeType: 'image/jpeg' }), // Sharp outputs JPEG
-    ...(uploadResult.width ? { width: uploadResult.width } : {}),
-    ...(uploadResult.height ? { height: uploadResult.height } : {}),
+    width: resizedMetadata.width,
+    height: resizedMetadata.height,
   };
 
   return {
     normalized,
     innovatrics: base64Data, // Send base64 string directly
   };
-}
-
-function generateUploadFileName(file: Express.Multer.File | undefined, fallback: string): string {
-  if (file && file.originalname) {
-    return file.originalname;
-  }
-  return fallback;
 }
 
 function toStringArray(input?: string[] | string): string[] {

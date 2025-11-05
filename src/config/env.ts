@@ -11,11 +11,4 @@ export const config = {
     bearerToken: process.env.INNOVATRICS_BEARER_TOKEN || '',
     host: process.env.INNOVATRICS_HOST || 'dot.innovatrics.com',
   },
-  cloudinary: {
-    cloudName: process.env.CLOUDINARY_CLOUD_NAME || '',
-    apiKey: process.env.CLOUDINARY_API_KEY || '',
-    apiSecret: process.env.CLOUDINARY_API_SECRET || '',
-    uploadFolder: process.env.CLOUDINARY_UPLOAD_FOLDER || undefined,
-    uploadPreset: process.env.CLOUDINARY_UPLOAD_PRESET || undefined,
-  },
 };

@@ -104,3 +104,7 @@ temp/
 .rts2_cache_cjs/
 .rts2_cache_es/
 .rts2_cache_es6/
+
+# Local image samples and generated payloads
+samples/
+data/
