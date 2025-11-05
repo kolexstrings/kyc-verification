@@ -1,23 +1,23 @@
-# Inspectify Backend
+# KYC Verification
 
-🚀 **Property Inspection Management Platform API** with Innovatrics DIS (Digital Identity Service) session-based verification.
+**Property Inspection Management Platform API** with Innovatrics DIS (Digital Identity Service) session-based verification.
 
 ## Overview
 
-Inspectify Backend is a robust Node.js API built with TypeScript and Express, designed for property inspection management platforms. It integrates with **Innovatrics DIS** using the modern session-based flow to provide secure identity verification through document scanning, liveness detection, and face matching.
+KYC Verification is a robust Node.js API built with TypeScript and Express, designed for property inspection management platforms. It integrates with **Innovatrics DIS** using the modern session-based flow to provide secure identity verification through document scanning, liveness detection, and face matching.
 
 **Perfect for testing and development** - No authentication required, all endpoints are publicly accessible for easy integration testing.
 
 ## Features
 
-- 🔐 **Session-Based Verification**: Complete verification workflow in orchestrated sessions
-- 📄 **Document Processing**: ID document and passport scanning with data extraction
-- 👤 **Liveness Detection**: Real-time liveness verification to prevent spoofing
-- 🔍 **Face Matching**: Automated face comparison between documents and selfies
-- 🛡️ **Production-Ready**: Rate limiting, CORS, security headers, and comprehensive error handling
-- 📝 **TypeScript**: Full type safety and IntelliSense support
-- 🔧 **Development Tools**: ESLint, Prettier, and hot reload for development
-- 🚫 **No Authentication**: All endpoints are publicly accessible for testing
+- **Session-Based Verification**: Complete verification workflow in orchestrated sessions
+- **Document Processing**: ID document and passport scanning with data extraction
+- **Liveness Detection**: Real-time liveness verification to prevent spoofing
+- **Face Matching**: Automated face comparison between documents and selfies
+- **Production-Ready**: Rate limiting, CORS, security headers, and comprehensive error handling
+- **TypeScript**: Full type safety and IntelliSense support
+- **Development Tools**: ESLint, Prettier, and hot reload for development
+- **No Authentication**: All endpoints are publicly accessible for testing
 
 ## Tech Stack
 
@@ -42,7 +42,7 @@ The API uses Innovatrics DIS session-based flow:
 ## Project Structure
 
 ```
-inspectify-backend/
+kyc-verification/
 ├── src/
 │   ├── app.ts                    # Main application entry point
 │   ├── config/
@@ -117,7 +117,7 @@ sequenceDiagram
 
 ## API Documentation & Testing
 
-### 📖 Interactive API Documentation
+### Interactive API Documentation
 
 The API includes comprehensive OpenAPI 3.0 specification that can be used with external tools:
 
@@ -131,7 +131,7 @@ The OpenAPI specification includes:
 - ✅ **Error codes** - What responses to expect
 - ✅ **Schema validation** - Understand all data structures
 
-### 🧪 Postman Collection
+### Postman Collection
 
 A complete Postman collection is provided for easy API testing:
 
@@ -148,7 +148,7 @@ A complete Postman collection is provided for easy API testing:
 - ✅ **Environment variables** - Easy switching between dev/prod
 - ✅ **Test scripts** - Automatic session ID extraction
 
-### 🛠️ Testing Workflow
+### Testing Workflow
 
 1. **Import the Postman collection**
 2. **Set environment variable**: `baseUrl` to `http://localhost:3000`
@@ -158,14 +158,116 @@ A complete Postman collection is provided for easy API testing:
 6. **Run "Face Match"** - Compares document and selfie
 7. **Run "Get Session Status"** - See final verification results
 
-### 🔗 External Documentation Tools
+### External Documentation Tools
 
 **For Interactive Testing:**
 - **Swagger Editor**: Copy the JSON from `/api-docs.json` and paste into [editor.swagger.io](https://editor.swagger.io)
 - **Postman**: Import the JSON from `/api-docs.json` as an API specification
 - **Insomnia**: Import the JSON for automatic request generation
 
-### 🔄 Verification Flow
+### Image Preparation & Base64 Workflow
+
+The verification endpoint accepts **base64-encoded images** (or data URIs) instead of multipart uploads. Follow the steps below to prepare your assets, share instructions with your team, or automate CLI testing.
+
+### 1. Organise your samples
+
+```
+├── samples/                 # Drop original JPEG/PNG files here
+└── data/                    # Generated base64 & data URI outputs
+```
+
+- `samples/` is where you place raw images (front document, selfie frames, etc.).
+- `data/` will be created automatically; each command writes an output file inside it.
+
+### 2. Convert images to plain base64
+
+```bash
+mkdir -p data
+
+base64 -i samples/document-front.jpeg | tr -d '\n' > data/document_front_base64.txt
+base64 -i samples/profile-image.jpeg  | tr -d '\n' > data/profile_image_base64.txt
+base64 -i samples/selfie1.jpg         | tr -d '\n' > data/selfie1_base64.txt
+base64 -i samples/selfie2.jpg         | tr -d '\n' > data/selfie2_base64.txt
+base64 -i samples/selfie3.jpg         | tr -d '\n' > data/selfie3_base64.txt
+```
+
+Note: tr -d '\n' strips newlines. Innovatrics expects a continuous base64 string.
+
+### 3. Optional data URI wrappers
+
+Some tools prefer data URIs. Generate them by prefixing the base64 content with the correct MIME type:
+
+```bash
+echo "data:image/jpeg;base64,$(cat data/document_front_base64.txt)" > data/document_front_datauri.txt
+echo "data:image/jpeg;base64,$(cat data/profile_image_base64.txt)"  > data/profile_image_datauri.txt
+echo "data:image/jpeg;base64,$(cat data/selfie1_base64.txt)"        > data/selfie1_datauri.txt
+echo "data:image/jpeg;base64,$(cat data/selfie2_base64.txt)"        > data/selfie2_datauri.txt
+echo "data:image/jpeg;base64,$(cat data/selfie3_base64.txt)"        > data/selfie3_datauri.txt
+```
+
+Use `image/png` if the source file is a PNG.
+
+### 4. Postman usage
+
+1. Import the OpenAPI spec or collection.
+2. Create environment variables (`doc_front_datauri`, `profile_image_datauri`, `selfie1_datauri`, etc.).
+3. Paste the contents of the corresponding `data/*_datauri.txt` files into those variables.
+4. Send a request like:
+
+   ```json
+   {
+     "name": "Jane",
+     "surname": "Doe",
+     "dateOfBirth": "1990-01-01",
+     "userId": "user_123456",
+     "identificationDocumentImage": [
+       "{{doc_front_datauri}}"
+     ],
+     "image": "{{profile_image_datauri}}",
+     "selfieImages": [
+       "{{selfie1_datauri}}",
+       "{{selfie2_datauri}}",
+       "{{selfie3_datauri}}"
+     ]
+   }
+   ```
+
+### 5. Newman automation
+
+```bash
+newman run ./collections/kyc.postman_collection.json \
+  --environment ./env/kyc.env.json \
+  --env-var doc_front_datauri="data:image/jpeg;base64,$(cat data/document_front_base64.txt)" \
+  --env-var profile_image_datauri="data:image/jpeg;base64,$(cat data/profile_image_base64.txt)" \
+  --env-var selfie1_datauri="data:image/jpeg;base64,$(cat data/selfie1_base64.txt)" \
+  --env-var selfie2_datauri="data:image/jpeg;base64,$(cat data/selfie2_base64.txt)" \
+  --env-var selfie3_datauri="data:image/jpeg;base64,$(cat data/selfie3_base64.txt)"
+```
+
+### 6. Postman pre-request sanitiser
+
+To safeguard against stray carriage returns or newlines inside the data URI variables, add a pre-request script at the collection, folder, or request level in Postman:
+
+```javascript
+['doc_front_datauri', 'profile_image_datauri', 'selfie1_datauri', 'selfie2_datauri', 'selfie3_datauri']
+  .forEach((key) => {
+    const value = pm.environment.get(key);
+    if (typeof value === 'string') {
+      pm.environment.set(key, value.replace(/[\r\n]/g, '').trim());
+    }
+  });
+```
+
+This script runs immediately before the request and re-saves each environment variable without control characters, preventing JSON parsing errors on the backend.
+
+### 7. Additional notes
+
+- Resize very large images before conversion to reduce payload size (max 3000px longer side is accepted by Innovatrics).
+- The backend accepts both raw base64 and data URIs—choose whichever is convenient.
+- Regenerate files in `data/` whenever you replace assets in `samples/`.
+- Store sample assets outside version control if they contain sensitive information.
+
+## 🔄 Verification Flow
 
 ```mermaid
 sequenceDiagram
@@ -208,7 +310,7 @@ sequenceDiagram
 1. **Clone and install dependencies:**
    ```bash
    git clone <repository-url>
-   cd inspectify-backend
+   cd kyc-verification
    yarn install
    ```
 
