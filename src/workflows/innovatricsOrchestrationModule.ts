@@ -1,5 +1,3 @@
-import axios, { AxiosInstance } from 'axios';
-import https from 'https';
 import sharp from 'sharp';
 
 import { normalizeImagePayload, NormalizedImage } from '../utils/image';
@@ -129,25 +127,23 @@ export interface VerificationOutcome {
   results?: SerializedVerificationResult;
 }
 
+type HttpMethod = 'GET' | 'POST' | 'PUT';
+
+interface HttpResponse<T> {
+  data: T;
+}
+
+class HttpError extends Error {
+  constructor(message: string, public readonly response?: { status: number; data?: any }) {
+    super(message);
+    this.name = 'HttpError';
+  }
+}
+
 export class InnovatricsEventWorkflow {
-  private readonly client: AxiosInstance;
+  private readonly requestTimeoutMs = 120000;
 
   constructor(private readonly config: InnovatricsWorkflowConfig) {
-    this.client = axios.create({
-      baseURL: config.baseUrl,
-      headers: {
-        Authorization: `Bearer ${config.bearerToken}`,
-        'Content-Type': 'application/json',
-        ...(config.host ? { Host: config.host } : {}),
-      },
-      timeout: 120000,
-      maxBodyLength: 50 * 1024 * 1024,
-      maxContentLength: 50 * 1024 * 1024,
-      httpsAgent: new https.Agent({
-        keepAlive: true,
-      }),
-      proxy: false,
-    });
   }
 
   async run(input: VerificationInput): Promise<VerificationOutcome> {
@@ -296,7 +292,7 @@ export class InnovatricsEventWorkflow {
   }
 
   private async createCustomer(): Promise<{ id: string }> {
-    const response = await this.client.post('/customers');
+    const response = await this.post<{ id: string }>('/customers');
     return response.data;
   }
 
@@ -304,7 +300,7 @@ export class InnovatricsEventWorkflow {
     customerId: string,
     payload: { externalId?: string; onboardingStatus: 'IN_PROGRESS' | 'FINISHED' }
   ): Promise<void> {
-    await this.client.post(`/customers/${customerId}/store`, payload);
+    await this.post(`/customers/${customerId}/store`, payload);
   }
 
   private async verifyDocument(params: {
@@ -332,7 +328,7 @@ export class InnovatricsEventWorkflow {
     }
 
     const documentResponse = await withRetry(() =>
-      this.client.put(`/customers/${customerId}/document`, createDocumentPayload),
+      this.put(`/customers/${customerId}/document`, createDocumentPayload),
     {
       shouldRetry: this.isRetryableError,
     });
@@ -340,7 +336,7 @@ export class InnovatricsEventWorkflow {
     const pages: DocumentPageResult[] = [];
 
     const frontPageResponse = await withRetry(() =>
-      this.client.put(`/customers/${customerId}/document/pages`, {
+      this.put(`/customers/${customerId}/document/pages`, {
         image: this.buildImagePayload(frontImage),
         advice: {
           classification: {
@@ -355,7 +351,7 @@ export class InnovatricsEventWorkflow {
 
     if (backImage) {
       const backPageResponse = await withRetry(() =>
-        this.client.put(`/customers/${customerId}/document/pages`, {
+        this.put(`/customers/${customerId}/document/pages`, {
           image: this.buildImagePayload(backImage),
           advice: {
             classification: {
@@ -370,7 +366,7 @@ export class InnovatricsEventWorkflow {
     }
 
     const inspectionResponse = await withRetry(() =>
-      this.client.post(`/customers/${customerId}/document/inspect`),
+      this.post(`/customers/${customerId}/document/inspect`),
     {
       shouldRetry: this.isRetryableError,
     });
@@ -378,7 +374,7 @@ export class InnovatricsEventWorkflow {
     let disclosedInspection: any | undefined;
     try {
       const disclosedResponse = await withRetry(() =>
-        this.client.post(`/customers/${customerId}/document/inspect/disclose`),
+        this.post(`/customers/${customerId}/document/inspect/disclose`),
       {
         shouldRetry: this.isRetryableError,
       });
@@ -423,7 +419,7 @@ export class InnovatricsEventWorkflow {
     customerId: string,
     imageBase64: string
   ): Promise<{ id: string }> {
-    const response = await this.client.put(`/customers/${customerId}/selfie`, {
+    const response = await this.put(`/customers/${customerId}/selfie`, {
       image: this.buildImagePayload(imageBase64),
     });
     return response.data;
@@ -433,19 +429,19 @@ export class InnovatricsEventWorkflow {
     id: string;
     detection: any;
   }> {
-    const response = await this.client.post('/faces', {
+    const response = await this.post('/faces', {
       image: this.buildImagePayload(imageBase64),
     });
     return response.data;
   }
 
   private async checkFaceMask(faceId: string): Promise<{ score: number }> {
-    const response = await this.client.get(`/faces/${faceId}/face-mask`);
+    const response = await this.get(`/faces/${faceId}/face-mask`);
     return response.data;
   }
 
   private async inspectCustomer(customerId: string): Promise<any> {
-    const response = await this.client.post(`/customers/${customerId}/inspect`);
+    const response = await this.post(`/customers/${customerId}/inspect`);
     return response.data;
   }
 
@@ -461,7 +457,7 @@ export class InnovatricsEventWorkflow {
       }
     }
 
-    const evaluationResponse = await this.client.post(
+    const evaluationResponse = await this.post(
       `/customers/${customerId}/liveness/evaluation`,
       {
         type: 'PASSIVE_LIVENESS',
@@ -472,7 +468,7 @@ export class InnovatricsEventWorkflow {
 
     if (options.deepfakeCheck) {
       try {
-        const deepfakeResponse = await this.client.post(
+        const deepfakeResponse = await this.post(
           `/customers/${customerId}/liveness/evaluation/extended`,
           {
             type: 'DEEPFAKE',
@@ -498,16 +494,111 @@ export class InnovatricsEventWorkflow {
   }
 
   private async ensureLivenessRecord(customerId: string): Promise<void> {
-    await this.client.put(`/customers/${customerId}/liveness`);
+    await this.put(`/customers/${customerId}/liveness`);
   }
 
   private async uploadAdditionalSelfie(
     customerId: string,
     imageBase64: string
   ): Promise<void> {
-    await this.client.post(`/customers/${customerId}/liveness/selfies`, {
+    await this.post(`/customers/${customerId}/liveness/selfies`, {
       image: this.buildImagePayload(imageBase64),
     });
+  }
+
+  private async request<T = any>(method: HttpMethod, path: string, body?: unknown): Promise<HttpResponse<T>> {
+    const url = new URL(path, this.config.baseUrl);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.requestTimeoutMs);
+
+    try {
+      const hasBody = body !== undefined;
+      const response = await fetch(
+        url,
+        {
+          method,
+          headers: this.buildHeaders(hasBody),
+          signal: controller.signal,
+          ...(hasBody ? { body: JSON.stringify(body) } : {}),
+        }
+      );
+
+      const parsedBody = await this.parseResponseBody(response);
+
+      if (!response.ok) {
+        throw new HttpError(`Request failed with status ${response.status}` as const, {
+          status: response.status,
+          data: parsedBody,
+        });
+      }
+
+      return { data: parsedBody as T };
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') {
+        throw new HttpError('Request timed out');
+      }
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private post<T = any>(path: string, body?: unknown): Promise<HttpResponse<T>> {
+    return this.request('POST', path, body);
+  }
+
+  private put<T = any>(path: string, body?: unknown): Promise<HttpResponse<T>> {
+    return this.request('PUT', path, body);
+  }
+
+  private get<T = any>(path: string): Promise<HttpResponse<T>> {
+    return this.request('GET', path);
+  }
+
+  private buildHeaders(hasBody: boolean): Record<string, string> {
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${this.config.bearerToken}`,
+    };
+
+    if (hasBody) {
+      headers['Content-Type'] = 'application/json';
+    }
+
+    if (this.config.host) {
+      headers.Host = this.config.host;
+    }
+
+    return headers;
+  }
+
+  private async parseResponseBody(response: Response): Promise<any> {
+    const contentLength = response.headers.get('content-length');
+    const contentType = response.headers.get('content-type') ?? '';
+
+    if (response.status === 204 || contentLength === '0') {
+      return undefined;
+    }
+
+    if (contentType.includes('application/json')) {
+      try {
+        return await response.json();
+      } catch (error) {
+        if (error instanceof SyntaxError) {
+          return undefined;
+        }
+        throw error;
+      }
+    }
+
+    try {
+      const text = await response.text();
+      return text.length > 0 ? text : undefined;
+    } catch (error) {
+      if (error instanceof TypeError) {
+        return undefined;
+      }
+      throw error;
+    }
   }
 
   private buildImagePayload(imageBase64: string): { data: string } {
