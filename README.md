@@ -191,8 +191,8 @@ The verification endpoint accepts **base64-encoded images** (or data URIs) inste
 ```bash
 mkdir -p data
 
-base64 -i samples/document-front.jpeg | tr -d '\n' > data/document_front_base64.txt
-base64 -i samples/profile-image.jpeg  | tr -d '\n' > data/profile_image_base64.txt
+base64 -i samples/document-front.jpg | tr -d '\n' > data/document_front_base64.txt
+base64 -i samples/profile-image.jpg  | tr -d '\n' > data/profile_image_base64.txt
 base64 -i samples/selfie1.jpg         | tr -d '\n' > data/selfie1_base64.txt
 base64 -i samples/selfie2.jpg         | tr -d '\n' > data/selfie2_base64.txt
 base64 -i samples/selfie3.jpg         | tr -d '\n' > data/selfie3_base64.txt

@@ -645,6 +645,13 @@ export class InnovatricsService {
         () => this.client.post(`/customers/${customerId}/document/inspect`),
         inspectRetryOptions
       );
+      console.log(
+        'Innovatrics document inspection response:',
+        JSON.stringify(inspectionResponse.data, null, 2),
+      );
+      if (!inspectionResponse.data?.documentPortrait) {
+        console.warn('Document inspection response missing documentPortrait block.');
+      }
 
       let disclosedInspection: any | undefined;
       try {
@@ -669,6 +676,13 @@ export class InnovatricsService {
           discloseRetryOptions
         );
         disclosedInspection = disclosedResponse.data;
+        console.log(
+          'Innovatrics disclosed document inspection:',
+          JSON.stringify(disclosedInspection, null, 2),
+        );
+        if (!disclosedInspection?.documentPortrait) {
+          console.warn('Disclosed document inspection missing documentPortrait block.');
+        }
       } catch (discloseError: any) {
         console.warn('Document inspection disclosure failed:', {
           status: discloseError.response?.status,
@@ -750,6 +764,19 @@ export class InnovatricsService {
     } catch (error: any) {
       throw new Error(
         `Failed to delete selfie: ${error.response?.data?.message || error.message}`
+      );
+    }
+  }
+
+  async getDocumentPortrait(customerId: string): Promise<any> {
+    try {
+      const response = await this.client.get(
+        `/customers/${customerId}/document/portrait`
+      );
+      return response.data;
+    } catch (error: any) {
+      throw new Error(
+        `Failed to get document portrait: ${error.response?.data?.message || error.message}`
       );
     }
   }

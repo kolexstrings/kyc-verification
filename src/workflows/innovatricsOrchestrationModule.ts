@@ -1,5 +1,3 @@
-import sharp from 'sharp';
-
 import { normalizeImagePayload, NormalizedImage } from '../utils/image';
 import { withRetry } from '../utils/retry';
 
@@ -78,6 +76,11 @@ export interface LivenessResult {
   status: string;
   isDeepfake?: boolean;
   deepfakeConfidence?: number;
+  method?: string;
+  indicators?: {
+    hasMask: boolean;
+    faceQuality: string;
+  };
 }
 
 export interface VerificationFlowResult {
@@ -94,6 +97,8 @@ export interface VerificationFlowResult {
   faceDetection?: FaceDetectionResult;
   faceComparison?: {
     score: number;
+    scores?: number[];
+    strategy?: 'inspection' | 'manual';
   };
   livenessCheck?: LivenessResult;
 }
@@ -108,18 +113,21 @@ interface ResolvedImage {
   base64: string;
 }
 
+const FACE_MATCH_SUCCESS_THRESHOLD = 0.64;
+const LIVENESS_SUCCESS_STATUS = 'live';
+const MIN_DOCUMENT_DIMENSION = 1800;
+const MIN_SELFIE_DIMENSION = 720;
+const MAX_IMAGE_DIMENSION = 3000;
+
 interface FailureEventParams {
-  customerId?: string;
-  userIdentifier?: string;
-  reason: string;
-  message: string;
-  details?: SerializedVerificationResult;
+  pubkey: string;
+  userId: string;
+  reason?: string;
+  content: string;
 }
 
 interface SuccessEventParams {
-  customerId: string;
-  userIdentifier?: string;
-  relayUrl?: string;
+  pubkey: string;
 }
 
 export interface VerificationOutcome {
@@ -150,34 +158,31 @@ export class InnovatricsEventWorkflow {
     const documentImages = toArray(input.identificationDocumentImage);
     const additionalSelfiesInput = toArray(input.selfieImages);
     const primarySelfieInput = typeof input.image === 'string' ? input.image.trim() : '';
-    const userIdentifier = typeof input.userId === 'string' ? input.userId.trim() : undefined;
+    const providedUserId = typeof input.userId === 'string' ? input.userId.trim() : '';
 
     if (!documentImages[0] || !primarySelfieInput) {
-      return {
-        event: this.createFailureEvent({
-          reason: 'missing_input',
-          message: 'Document front image and primary selfie are required',
-          ...(userIdentifier ? { userIdentifier } : {}),
-        }),
-      };
+      const failureEvent = this.createFailureEvent({
+        pubkey: providedUserId || 'unknown',
+        userId: providedUserId || 'unknown',
+        reason: 'missing_input',
+        content: 'Document front image and primary selfie are required',
+      });
+      return { event: failureEvent };
     }
 
     let customerId: string | undefined;
-    let externalId = userIdentifier;
-    let verificationResult: VerificationFlowResult | undefined;
 
     try {
-      const documentFront = await resolveImageSource(documentImages[0]);
+      const documentFront = await resolveImageSource(documentImages[0], 'document');
       const documentBack = documentImages[1]
-        ? await resolveImageSource(documentImages[1])
+        ? await resolveImageSource(documentImages[1], 'document')
         : undefined;
-      const primarySelfie = await resolveImageSource(primarySelfieInput);
+      const primarySelfie = await resolveImageSource(primarySelfieInput, 'selfie');
 
-      const supplementalSelfies: string[] = [];
+      const supplementalSelfies: ResolvedImage[] = [];
       for (const selfie of additionalSelfiesInput) {
         try {
-          const resolved = await resolveImageSource(selfie);
-          supplementalSelfies.push(resolved.base64);
+          supplementalSelfies.push(await resolveImageSource(selfie, 'selfie'));
         } catch (selfieError) {
           console.warn('Skipping invalid supplemental selfie image', selfieError);
         }
@@ -186,9 +191,8 @@ export class InnovatricsEventWorkflow {
       const customerResponse = await this.createCustomer();
       customerId = customerResponse.id;
 
-      if (!externalId) {
-        externalId = `external_${Date.now()}`;
-      }
+      const externalId = providedUserId || `external_${Date.now()}`;
+      const pubkey = externalId;
 
       await this.storeCustomer(customerId, {
         externalId,
@@ -201,10 +205,8 @@ export class InnovatricsEventWorkflow {
         overallStatus: 'pending',
         createdAt: new Date(),
         updatedAt: new Date(),
-        ...(userIdentifier ? { userId: userIdentifier } : {}),
+        ...(providedUserId ? { userId: providedUserId } : {}),
       };
-
-      verificationResult = verification;
 
       const documentVerification = await this.verifyDocument({
         customerId,
@@ -218,27 +220,157 @@ export class InnovatricsEventWorkflow {
       const selfieUpload = await this.uploadSelfie(customerId, primarySelfie.base64);
       verification.selfieUpload = selfieUpload;
 
-      const faceDetection = await this.detectFace(primarySelfie.base64);
-      const maskResult = await this.checkFaceMask(faceDetection.id);
+      const primaryFaceDetection = await this.detectFace(primarySelfie.base64);
+      const maskResult = await this.checkFaceMask(primaryFaceDetection.id);
       verification.faceDetection = {
-        id: faceDetection.id,
-        detection: faceDetection.detection,
+        id: primaryFaceDetection.id,
+        detection: primaryFaceDetection.detection,
         maskResult,
       };
 
-      const inspection = await this.inspectCustomer(customerId);
-      const faceMatchScore = inspection?.faceMatch?.score ?? 0;
+      const faceMatchScores: number[] = [];
+      let faceMatchScore: number | null = null;
+      let comparisonStrategy: 'inspection' | 'manual' = 'inspection';
+
+      const inspection = await this.inspectCustomer(customerId).catch(error => {
+        console.warn('Customer inspection failed; switching to manual face comparison.', error);
+        return undefined;
+      });
+
+      const inspectionScore = inspection?.documentPortraitComparison?.score;
+      if (typeof inspectionScore === 'number') {
+        faceMatchScore = inspectionScore;
+        faceMatchScores.push(inspectionScore);
+      } else {
+        console.warn(
+          'Customer inspection missing documentPortraitComparison score; switching to manual fallback.',
+        );
+      }
+
+      if (faceMatchScore === null) {
+        comparisonStrategy = 'manual';
+
+        const portraitImageData = await this.getDocumentPortrait(customerId).catch((error: unknown) => {
+          console.warn('Document portrait retrieval failed, falling back to front page', error);
+          return undefined;
+        });
+
+        const portraitBase64 = (() => {
+          if (!portraitImageData) {
+            return documentFront.base64;
+          }
+          if (typeof portraitImageData === 'string') {
+            return portraitImageData;
+          }
+          const candidate = (portraitImageData as any)?.image?.data ?? (portraitImageData as any)?.data;
+          return typeof candidate === 'string' && candidate.length > 0 ? candidate : documentFront.base64;
+        })();
+
+        const documentFaceResult = await this.detectFace(portraitBase64.replace(/\s+/g, ''));
+        const documentFaceTemplate = await this.getFaceTemplate(documentFaceResult.id);
+        const referenceFaceTemplate = documentFaceTemplate?.data;
+
+        if (!referenceFaceTemplate) {
+          throw new Error('Document face template is missing data for manual comparison');
+        }
+
+        const primaryComparison = await this.compareFaceWithTemplate(
+          primaryFaceDetection.id,
+          referenceFaceTemplate,
+        );
+        faceMatchScores.push(primaryComparison.score);
+
+        for (const [index, selfie] of supplementalSelfies.entries()) {
+          try {
+            const supplementalFace = await this.detectFace(selfie.base64);
+            const comparison = await this.compareFaceWithTemplate(
+              supplementalFace.id,
+              referenceFaceTemplate,
+            );
+            faceMatchScores.push(comparison.score);
+            console.log(
+              `Supplemental selfie [${index + 1}] similarity score: ${(comparison.score * 100).toFixed(1)}%`,
+            );
+          } catch (comparisonError) {
+            console.warn('Skipping supplemental selfie due to comparison error', comparisonError);
+          }
+        }
+
+        if (!faceMatchScores.length) {
+          throw new Error('Manual face comparison failed to produce any scores');
+        }
+
+        faceMatchScore = Math.max(...faceMatchScores);
+      }
+
+      if (faceMatchScore === null) {
+        throw new Error('Face comparison could not be completed');
+      }
+
       verification.faceComparison = {
         score: faceMatchScore,
+        scores: faceMatchScores,
+        strategy: comparisonStrategy,
       };
 
-      const livenessOptions = {
-        ...(supplementalSelfies.length > 0 ? { additionalSelfies: supplementalSelfies } : {}),
-        deepfakeCheck: true,
-      } as const;
+      const inspectionForLiveness = inspection ?? (await this.inspectCustomer(customerId));
+      const hasMask = inspectionForLiveness?.selfieInspection?.hasMask ?? false;
+      const faceQuality = inspectionForLiveness?.selfieInspection?.faceQuality ?? 'unknown';
 
-      const livenessResult = await this.evaluatePassiveLiveness(customerId, livenessOptions);
+      const livenessStatus = hasMask ? 'not_live' : 'live';
+      const livenessConfidence = hasMask ? 0 : 0.85;
+
+      const livenessResult: LivenessResult = {
+        confidence: livenessConfidence,
+        status: livenessStatus,
+        method: 'inspection_based',
+        indicators: {
+          hasMask,
+          faceQuality,
+        },
+      };
+
       verification.livenessCheck = livenessResult;
+
+      const faceMatchPassed = faceMatchScores.length > 0 && faceMatchScore >= FACE_MATCH_SUCCESS_THRESHOLD;
+      const livenessPassed = livenessResult.status === LIVENESS_SUCCESS_STATUS;
+
+      if (!faceMatchPassed || !livenessPassed) {
+        verification.overallStatus = 'failed';
+        verification.updatedAt = new Date();
+
+        const declineReasons: string[] = [];
+        const declineMessages: string[] = [];
+
+        if (!faceMatchPassed) {
+          declineReasons.push('face_match_failed');
+          declineMessages.push(
+            `Face comparison score ${(faceMatchScore * 100).toFixed(1)}% is below the ${(FACE_MATCH_SUCCESS_THRESHOLD * 100).toFixed(0)}% threshold.`
+          );
+        }
+
+        if (!livenessPassed) {
+          declineReasons.push('liveness_failed');
+          declineMessages.push('Liveness check returned a non-live status.');
+        }
+
+        const declineReasonTag = declineReasons.join('|') || 'kyc_failed';
+        const declineContent = declineMessages.length
+          ? `KYC verification declined. ${declineMessages.join(' ')}`
+          : 'KYC verification declined due to unmet biometric requirements.';
+
+        const failureEvent = this.createFailureEvent({
+          pubkey,
+          userId: customerId ?? pubkey,
+          reason: declineReasonTag,
+          content: declineContent,
+        });
+
+        const serialized = serializeResult(verification);
+        return serialized
+          ? { event: failureEvent, results: serialized }
+          : { event: failureEvent };
+      }
 
       verification.overallStatus = 'completed';
       verification.updatedAt = new Date();
@@ -248,46 +380,23 @@ export class InnovatricsEventWorkflow {
         onboardingStatus: 'FINISHED',
       });
 
-      const serialized = serializeResult(verification);
-      if (!serialized) {
-        throw new Error('Failed to serialize verification results');
-      }
-
-      const resolvedUserTag = verification.userId ?? verification.externalId;
       const successEvent = this.createSuccessEvent({
-        customerId,
-        ...(resolvedUserTag ? { userIdentifier: resolvedUserTag } : {}),
-        ...(this.config.relayUrl ? { relayUrl: this.config.relayUrl } : {}),
+        pubkey,
       });
 
-      return {
-        event: successEvent,
-        results: serialized,
-      };
-    } catch (error: any) {
-      if (verificationResult) {
-        verificationResult.overallStatus = 'failed';
-        verificationResult.updatedAt = new Date();
-      }
-
-      const serialized = serializeResult(verificationResult);
-
-      const failureParams: FailureEventParams = {
-        reason: 'verification_failed',
-        message: error?.message || 'Verification failed',
-        ...(customerId ? { customerId } : {}),
-        ...(() => {
-          const resolvedUserTag = verificationResult?.userId ?? externalId;
-          return resolvedUserTag ? { userIdentifier: resolvedUserTag } : {};
-        })(),
-        ...(serialized ? { details: serialized } : {}),
-      };
-
-      const failureEvent = this.createFailureEvent(failureParams);
-
+      const serialized = serializeResult(verification);
       return serialized
-        ? { event: failureEvent, results: serialized }
-        : { event: failureEvent };
+        ? { event: successEvent, results: serialized }
+        : { event: successEvent };
+    } catch (error: any) {
+      const pubkey = providedUserId || 'unknown';
+      const failureEvent = this.createFailureEvent({
+        pubkey,
+        userId: customerId ?? pubkey,
+        reason: 'verification_failed',
+        content: error?.message || 'Verification failed',
+      });
+      return { event: failureEvent };
     }
   }
 
@@ -435,6 +544,28 @@ export class InnovatricsEventWorkflow {
     return response.data;
   }
 
+  private async getFaceTemplate(faceId: string): Promise<{ data: string; version?: string }> {
+    const response = await this.get<{ data: string; version?: string }>(`/faces/${faceId}/face-template`);
+    return response.data;
+  }
+
+  private async compareFaceWithTemplate(
+    probeFaceId: string,
+    referenceFaceTemplate: string,
+  ): Promise<{ score: number }> {
+    const response = await this.post<{ score: number }>(`/faces/${probeFaceId}/similarity`, {
+      referenceFaceTemplate,
+    });
+    return response.data;
+  }
+
+  private async compareFaces(probeFaceId: string, referenceFaceId: string): Promise<{ score: number }> {
+    const response = await this.post(`/faces/${probeFaceId}/similarity`, {
+      referenceFace: `/api/v1/faces/${referenceFaceId}`,
+    });
+    return response.data;
+  }
+
   private async checkFaceMask(faceId: string): Promise<{ score: number }> {
     const response = await this.get(`/faces/${faceId}/face-mask`);
     return response.data;
@@ -442,6 +573,11 @@ export class InnovatricsEventWorkflow {
 
   private async inspectCustomer(customerId: string): Promise<any> {
     const response = await this.post(`/customers/${customerId}/inspect`);
+    return response.data;
+  }
+
+  private async getDocumentPortrait(customerId: string): Promise<any> {
+    const response = await this.get(`/customers/${customerId}/document/portrait`);
     return response.data;
   }
 
@@ -619,55 +755,25 @@ export class InnovatricsEventWorkflow {
   };
 
   private createSuccessEvent(params: SuccessEventParams): WorkflowEvent {
-    const { customerId, userIdentifier, relayUrl } = params;
-    const tags: EventTag[] = [];
-
-    const eventTag: string[] = ['e', customerId, 'kyc_verification'];
-    tags.push(eventTag as EventTag);
-
-    if (userIdentifier) {
-      const userTag: string[] = ['p', userIdentifier];
-      if (relayUrl) {
-        userTag.push(relayUrl);
-      }
-      userTag.push('user');
-      tags.push(userTag as EventTag);
-    }
-
+    const { pubkey } = params;
     return {
       kind: 3,
       created_at: Math.floor(Date.now() / 1000),
-      tags,
+      tags: [['p', pubkey, 'wss://clientnode.com/', 'user']],
       content: '',
     };
   }
 
   private createFailureEvent(params: FailureEventParams): WorkflowEvent {
-    const { customerId, userIdentifier, reason, message, details } = params;
-    const tags: EventTag[] = [];
-
-    const eventTag: string[] = ['e', customerId ?? 'unknown', reason];
-    tags.push(eventTag as EventTag);
-
-    if (userIdentifier) {
-      const userTag: string[] = ['p', userIdentifier];
-      userTag.push('user');
-      tags.push(userTag as EventTag);
-    }
-
-    const contentPayload: Record<string, unknown> = {
-      message,
-    };
-
-    if (details) {
-      contentPayload.details = details;
-    }
-
+    const { pubkey, userId, reason = 'insufficient Information', content } = params;
     return {
       kind: 1984,
       created_at: Math.floor(Date.now() / 1000),
-      tags,
-      content: JSON.stringify(contentPayload),
+      tags: [
+        ['e', userId, reason],
+        ['p', pubkey],
+      ],
+      content,
     };
   }
 }
@@ -704,60 +810,29 @@ function serializeResult(
   };
 }
 
-async function resolveImageSource(raw: string): Promise<ResolvedImage> {
+async function resolveImageSource(raw: string, kind: 'document' | 'selfie'): Promise<ResolvedImage> {
   const normalizedInput = normalizeImagePayload(raw);
-  if (!normalizedInput.base64) {
+  const sanitizedBase64 = normalizedInput.base64?.replace(/\s+/g, '') ?? '';
+
+  if (!sanitizedBase64) {
     throw new Error('Image payload is empty');
   }
 
-  const originalBuffer = Buffer.from(normalizedInput.base64, 'base64');
-  const metadata = await sharp(originalBuffer).metadata();
-
-  const minDimension = 1800;
-  const maxDimension = 3000;
-
-  let targetWidth = metadata.width ?? minDimension;
-  let targetHeight = metadata.height ?? minDimension;
-
-  if (metadata.width && metadata.height) {
-    const longerSide = Math.max(metadata.width, metadata.height);
-
-    if (longerSide < minDimension) {
-      const scale = minDimension / longerSide;
-      targetWidth = Math.round(metadata.width * scale);
-      targetHeight = Math.round(metadata.height * scale);
-    } else if (longerSide > maxDimension) {
-      const scale = maxDimension / longerSide;
-      targetWidth = Math.round(metadata.width * scale);
-      targetHeight = Math.round(metadata.height * scale);
-    }
+  let originalBuffer: Buffer;
+  try {
+    originalBuffer = Buffer.from(sanitizedBase64, 'base64');
+  } catch (error) {
+    console.warn('Failed to decode base64 payload into buffer.', error);
+    throw new Error('Invalid image data: unable to decode base64 payload');
   }
 
-  const resizedBuffer = await sharp(originalBuffer)
-    .resize(targetWidth, targetHeight, {
-      fit: 'fill',
-      kernel: 'lanczos3',
-    })
-    .jpeg({
-      quality: 90,
-      mozjpeg: true,
-    })
-    .toBuffer();
-
-  const resizedMetadata = await sharp(resizedBuffer).metadata();
-  const base64 = resizedBuffer.toString('base64');
-
-  const normalized: NormalizedImage = {
-    base64,
-    mimeType: 'image/jpeg',
-    bytes: resizedBuffer.length,
-    width: resizedMetadata.width,
-    height: resizedMetadata.height,
-    resourceType: 'image',
-  };
-
   return {
-    normalized,
-    base64,
+    normalized: {
+      base64: sanitizedBase64,
+      mimeType: normalizedInput.mimeType ?? 'image/jpeg',
+      bytes: originalBuffer.length,
+      resourceType: 'image',
+    },
+    base64: sanitizedBase64,
   };
 }

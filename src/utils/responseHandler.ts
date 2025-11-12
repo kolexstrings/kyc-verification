@@ -21,14 +21,18 @@ export class ResponseHandler {
     return res.status(statusCode).json(response);
   }
 
-  static error(res: Response, message: string, statusCode = 500, error?: string) {
-    const response: ApiResponse = {
+  static error<T>(res: Response, message: string, statusCode = 500, error?: string, data?: T) {
+    const response: ApiResponse<T> = {
       success: false,
       message,
     };
 
     if (error) {
       response.error = error;
+    }
+
+    if (typeof data !== 'undefined') {
+      response.data = data;
     }
 
     return res.status(statusCode).json(response);
