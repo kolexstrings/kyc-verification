@@ -69,7 +69,7 @@ dot-digital-identity-service-1.59.1-amd64/
    curl -v http://localhost:8080/actuator/health \
         -H "Authorization: Bearer <Base64(apiKey:apiSecret)>"
    ```
-   Health endpoints may be open by default (200) or require auth (401) depending on security config.
+   Health endpoints may be open by default (200) or require auth (401) depending on security config. Use `/api/v1/info` to confirm DIS itself is reachable after port forwarding: `curl http://localhost:8080/api/v1/info`.
 
 ---
 
@@ -141,6 +141,7 @@ dot-digital-identity-service-1.59.1-amd64/
    ```bash
    curl -v http://localhost:8080/actuator/health \
         -H "Authorization: Bearer <Base64(apiKey:apiSecret)>"
+   curl -v http://localhost:8080/api/v1/info
    ```
    (If you get HTTP 401, your token is missing/invalid. If you get connection errors, double-check VirtualBox port forwarding.)
 
@@ -149,8 +150,7 @@ dot-digital-identity-service-1.59.1-amd64/
 ## 5. Authentication & Authorization
 
 - DIS 1.20.0+ only accepts API Key authentication.
-- Use the Innovatrics portal to generate the **API Key** and **API Secret** (the “API Key & Secret” popup shows three values—copy the ones for your environment).
-- Construct the bearer token: `Base64(apiKey:apiSecret)`.
+- Use the Innovatrics portal to generate the **API Key** and **API Secret** (the “API Key & Secret” popup shows three values—copy the ones for your environment). The bearer token is still `Base64(apiKey:apiSecret)`.
   ```bash
   echo -n 'apiKey:apiSecret' | base64
   ```
@@ -159,7 +159,26 @@ dot-digital-identity-service-1.59.1-amd64/
   Authorization: Bearer <Base64(apiKey:apiSecret)>
   ```
 - Some endpoints (`/metrics`, `/health`, `/info`) are open by default; others require the bearer token.
-- If you need to harden or customize auth, edit `config/application.yml` (see Innovatrics docs for the `security.*` section) and restart `docker compose`.
+- **Register API clients in `config/application.yml`.** DIS will reject requests until the API key/secret pair is added to the `security.apiClients` block. Example:
+  ```yaml
+  security:
+    apiClients:
+      - clientId: 'INK_xxxxx'
+        clientSecret: 'INS_xxxxx'
+        roles:
+          - CUSTOMER_CREATE
+          - CUSTOMER_READ
+          - DOCUMENT_CREATE
+          - DOCUMENT_VERIFY
+          - FACE_DETECTION
+          - FACE_COMPARISON
+          - PASSIVE_LIVENESS
+          - WORKFLOW_CREATE
+  ```
+  Restart `docker compose` after editing so DIS reloads the credentials.
+- If you need to harden or customize auth, continue editing `config/application.yml` (e.g., security roles, redis creds) and restart `docker compose`.
+
+> **Local DIS base URL reminder**: container endpoints live under `/api/v1` (e.g., `http://localhost:8080/api/v1`). The legacy `/identity/api/v1` path only applies to Innovatrics’ hosted service.
 
 ---
 
@@ -169,24 +188,28 @@ dot-digital-identity-service-1.59.1-amd64/
 2. `docker compose logs -f` contains `Tomcat started on port 8080` and `Application running inside docker` messages.
 3. `curl http://localhost:8080/actuator/health -H 'Authorization: Bearer …'` returns HTTP 200 with JSON status.
 4. The provided Postman collection (`doc/postman/*.json`) works when pointed at `http://localhost:8080` and using the same bearer token.
-5. Your application (`kyc-verification`) points to the new base URL:
+5. Your application (`kyc-verification`) points to the local base URL:
    ```env
-   DIS_BASE_URL=http://localhost:8080
-   DIS_AUTH_BEARER=<Base64(apiKey:apiSecret)>
+   INNOVATRICS_BASE_URL=http://localhost:8080/api/v1
+   INNOVATRICS_HOST=localhost:8080
+   INNOVATRICS_BEARER_TOKEN=<Base64(apiKey:apiSecret)>
+   DIS_SKIP_STORE=true        # optional flag while /customers/{id}/store is unavailable
    ```
 
 ---
 
 ## 7. Troubleshooting
 
-| Problem                                                            | Fix                                                                                                                                      |
-| ------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| `docker compose` not found                                         | Install the compose plugin (`sudo apt install docker-compose-plugin` on Ubuntu, or ensure Docker Desktop is installed on macOS/Windows). |
-| `no space left on device`                                          | Free host disk space; in a VM, expand the VDI and resize LVM (see step 4).                                                               |
-| HTTP 401 responses                                                 | Double-check bearer token (must be `Base64(apiKey:apiSecret)`), confirm header is present, ensure you restarted after config changes.    |
-| `curl localhost:8080` fails on macOS                               | Confirm VirtualBox NAT rule Host 8080 → Guest 8080, ensure container listens on `0.0.0.0:8080`, restart VM if the rule changed.          |
-| Docker build error “dot-digital-identity-service.jar not found”    | Re-extract the bundle and copy `linux/amd64/dot-digital-identity-service.jar` back into the working directory before running Compose.    |
-| SSH to VM fails (`kex_exchange_identification` / connection reset) | VM is likely paused due to host disk pressure. Free space, resume (`VBoxManage controlvm "ubuntu-dis" resume`), then reconnect.          |
+| Problem                                                            | Fix                                                                                                                                             |
+| ------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `docker compose` not found                                         | Install the compose plugin (`sudo apt install docker-compose-plugin` on Ubuntu, or ensure Docker Desktop is installed on macOS/Windows).        |
+| `no space left on device`                                          | Free host disk space; in a VM, expand the VDI and resize LVM (see step 4).                                                                      |
+| HTTP 401 responses                                                 | Double-check bearer token (must be `Base64(apiKey:apiSecret)`), confirm header is present, ensure you restarted after config changes.           |
+| HTTP 403 responses on every endpoint                               | Confirm your API key/secret is registered under `security.apiClients` inside the container. Without it DIS accepts the token but blocks access. |
+| `/customers/{id}/store` returns 404                                | Some self-hosted bundles do not expose this route. Set `DIS_SKIP_STORE=true` (backend) or guard the call so the rest of the flow can proceed.   |
+| `curl localhost:8080` fails on macOS                               | Confirm VirtualBox NAT rule Host 8080 → Guest 8080, ensure container listens on `0.0.0.0:8080`, restart VM if the rule changed.                 |
+| Docker build error “dot-digital-identity-service.jar not found”    | Re-extract the bundle and copy `linux/amd64/dot-digital-identity-service.jar` back into the working directory before running Compose.           |
+| SSH to VM fails (`kex_exchange_identification` / connection reset) | VM is likely paused due to host disk pressure. Free space, resume (`VBoxManage controlvm "ubuntu-dis" resume`), then reconnect.                 |
 
 ---
 
@@ -209,6 +232,9 @@ docker compose logs -f
 # Health check with auth
 curl -v http://localhost:8080/actuator/health \
      -H "Authorization: Bearer <Base64(apiKey:apiSecret)>"
+
+# Quick sanity endpoint
+curl -v http://localhost:8080/api/v1/info
 ```
 
 Refer to `doc/Innovatrics_DOT_Digital_Identity_Service_Installation.pdf` (or the HTML copy in the repo) for deeper configuration topics such as memcached, Redis clustering, biometric thresholds, and logging. Keep the Postman collection in `doc/postman/` handy for manual API tests.
