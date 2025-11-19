@@ -202,11 +202,25 @@ export class KYCVerificationController {
         externalId,
         onboardingStatus: 'IN_PROGRESS',
       });
-      await innovatricsClient.storeCustomer(customer.id, {
-        externalId,
-        onboardingStatus: 'IN_PROGRESS',
-      });
-      console.log('Innovatrics acknowledged customer linkage');
+      if (process.env.DIS_SKIP_STORE !== 'true') {
+        try {
+          await innovatricsClient.storeCustomer(customer.id, {
+            externalId,
+            onboardingStatus: 'IN_PROGRESS',
+          });
+          console.log('Innovatrics acknowledged customer linkage');
+        } catch (error: any) {
+          if (error.message?.includes('404')) {
+            console.warn(
+              'DIS storeCustomer endpoint unavailable; continuing without linkage update'
+            );
+          } else {
+            throw error;
+          }
+        }
+      } else {
+        console.warn('DIS storeCustomer skipped (DIS_SKIP_STORE=true)');
+      }
 
       await initializeOnboardingRecord({
         userId: userIdForTracking,
@@ -245,20 +259,27 @@ export class KYCVerificationController {
           tags: ['kyc', 'document', 'back'],
           kind: 'document',
         });
-        const documentFrontBase64 = extractBase64Payload(documentFront.innovatrics);
+        const documentFrontBase64 = extractBase64Payload(
+          documentFront.innovatrics
+        );
         let documentFrontBuffer: Buffer | null = null;
         try {
           documentFrontBuffer = Buffer.from(documentFrontBase64, 'base64');
         } catch (error: any) {
-          console.warn('Failed to decode document front payload before diagnostics', {
-            message: error?.message,
-          });
+          console.warn(
+            'Failed to decode document front payload before diagnostics',
+            {
+              message: error?.message,
+            }
+          );
         }
 
         if (documentFrontBuffer) {
           console.log('Document front payload diagnostics', {
             bytes: documentFrontBuffer.length,
-            sha256: createHash('sha256').update(documentFrontBuffer).digest('hex'),
+            sha256: createHash('sha256')
+              .update(documentFrontBuffer)
+              .digest('hex'),
             sample: documentFrontBase64.slice(0, 32),
             suffix: documentFrontBase64.slice(-32),
           });
@@ -268,18 +289,26 @@ export class KYCVerificationController {
         if (documentBack?.innovatrics) {
           try {
             documentBackBase64 = extractBase64Payload(documentBack.innovatrics);
-            const documentBackBuffer = Buffer.from(documentBackBase64, 'base64');
+            const documentBackBuffer = Buffer.from(
+              documentBackBase64,
+              'base64'
+            );
             console.log('Document back payload diagnostics', {
               bytes: documentBackBuffer.length,
-              sha256: createHash('sha256').update(documentBackBuffer).digest('hex'),
+              sha256: createHash('sha256')
+                .update(documentBackBuffer)
+                .digest('hex'),
               sample: documentBackBase64.slice(0, 32),
               suffix: documentBackBase64.slice(-32),
             });
           } catch (error: any) {
             documentBackBase64 = undefined;
-            console.warn('Failed to decode document back payload before diagnostics', {
-              message: error?.message,
-            });
+            console.warn(
+              'Failed to decode document back payload before diagnostics',
+              {
+                message: error?.message,
+              }
+            );
           }
         }
 
@@ -311,17 +340,19 @@ export class KYCVerificationController {
         console.log('   Pages processed successfully');
         console.log(
           '   Document inspection snapshot:',
-          JSON.stringify(documentResult.inspection, null, 2),
+          JSON.stringify(documentResult.inspection, null, 2)
         );
         console.log(
           '   Disclosed inspection snapshot:',
-          JSON.stringify(documentResult.disclosedInspection, null, 2),
+          JSON.stringify(documentResult.disclosedInspection, null, 2)
         );
         if (!documentResult?.inspection?.documentPortrait) {
           console.warn('   Inspection missing documentPortrait block.');
         }
         if (!documentResult?.disclosedInspection?.documentPortrait) {
-          console.warn('   Disclosed inspection missing documentPortrait block.');
+          console.warn(
+            '   Disclosed inspection missing documentPortrait block.'
+          );
         }
         const frontPageData =
           documentResult.pages?.find(page => page.pageType === 'front') ??
@@ -368,10 +399,7 @@ export class KYCVerificationController {
         const selfieSanitized = selfieInnovatricsPayload.replace(/\s+/g, '');
 
         // Use sanitized payload for BOTH uploadSelfie and detectFace
-        await innovatricsClient.uploadSelfie(
-          customerId,
-          selfieSanitized
-        );
+        await innovatricsClient.uploadSelfie(customerId, selfieSanitized);
         console.log('\nSUCCESS: Selfie uploaded');
         console.log('='.repeat(70) + '\n');
 
@@ -430,15 +458,18 @@ export class KYCVerificationController {
         console.log('\n' + '='.repeat(70));
         console.log('STEP 5: Comparing document photo with selfie');
         console.log('='.repeat(70));
-        
-        console.log('Using Innovatrics customer inspection for face comparison...');
+
+        console.log(
+          'Using Innovatrics customer inspection for face comparison...'
+        );
         let faceMatchScore: number | null = null;
         const faceMatchScores: number[] = [];
         let comparisonStrategy: 'inspection' | 'manual' = 'inspection';
         let customerInspection: any | undefined;
 
         try {
-          customerInspection = await innovatricsClient.inspectCustomer(customerId);
+          customerInspection =
+            await innovatricsClient.inspectCustomer(customerId);
 
           if (customerInspection) {
             console.log(
@@ -448,19 +479,25 @@ export class KYCVerificationController {
             if (!customerInspection?.documentPortraitComparison) {
               console.warn(
                 'Customer inspection missing documentPortraitComparison block. Inspect fields:',
-                Object.keys(customerInspection ?? {}),
+                Object.keys(customerInspection ?? {})
               );
             } else if (
-              typeof customerInspection.documentPortraitComparison?.score !== 'number'
+              typeof customerInspection.documentPortraitComparison?.score !==
+              'number'
             ) {
               console.warn(
                 'Customer inspection documentPortraitComparison present but score missing. Full block:',
-                JSON.stringify(customerInspection.documentPortraitComparison, null, 2),
+                JSON.stringify(
+                  customerInspection.documentPortraitComparison,
+                  null,
+                  2
+                )
               );
             }
           }
 
-          const inspectionScore = customerInspection?.documentPortraitComparison?.score;
+          const inspectionScore =
+            customerInspection?.documentPortraitComparison?.score;
           if (typeof inspectionScore === 'number') {
             faceMatchScore = inspectionScore;
             faceMatchScores.push(inspectionScore);
@@ -481,14 +518,15 @@ export class KYCVerificationController {
             '\nFalling back to manual face comparison using document image templates...'
           );
 
-          const documentBase64 = extractBase64Payload(documentFront.innovatrics);
+          const documentBase64 = extractBase64Payload(
+            documentFront.innovatrics
+          );
           const documentSanitized = documentBase64.replace(/\s+/g, '');
           await debugImagePayload('document_full', documentSanitized);
 
           console.log('Requesting manual document face detection via /faces');
-          const documentFaceResult = await innovatricsClient.detectFace(
-            documentSanitized
-          );
+          const documentFaceResult =
+            await innovatricsClient.detectFace(documentSanitized);
           console.log(
             'Document face detection raw result (manual comparison):',
             JSON.stringify(documentFaceResult, null, 2)
@@ -500,8 +538,9 @@ export class KYCVerificationController {
             );
           }
 
-          const documentFaceTemplate =
-            await innovatricsClient.getFaceTemplate(documentFaceResult.id);
+          const documentFaceTemplate = await innovatricsClient.getFaceTemplate(
+            documentFaceResult.id
+          );
           const referenceFaceTemplate = documentFaceTemplate?.data;
 
           if (!referenceFaceTemplate) {
@@ -544,7 +583,9 @@ export class KYCVerificationController {
               continue;
             }
 
-            const additionalPayload = extractBase64Payload(additionalSelfie.innovatrics);
+            const additionalPayload = extractBase64Payload(
+              additionalSelfie.innovatrics
+            );
             const additionalSanitized = additionalPayload.replace(/\s+/g, '');
             await debugImagePayload(
               `additional_selfie_${i + 1}`,
@@ -558,11 +599,10 @@ export class KYCVerificationController {
               additionalFaceResult
             );
 
-            const additionalComparison =
-              await innovatricsClient.compareFaces(
-                additionalFaceResult.id,
-                referenceFaceRequest
-              );
+            const additionalComparison = await innovatricsClient.compareFaces(
+              additionalFaceResult.id,
+              referenceFaceRequest
+            );
             faceMatchScores.push(additionalComparison.score);
             console.log(
               `Additional selfie ${i + 1} comparison (manual):`,
@@ -577,8 +617,10 @@ export class KYCVerificationController {
           }
 
           const averageScore =
-            faceMatchScores.reduce((sum: number, score: number) => sum + score, 0) /
-            faceMatchScores.length;
+            faceMatchScores.reduce(
+              (sum: number, score: number) => sum + score,
+              0
+            ) / faceMatchScores.length;
           const bestScore = Math.max(...faceMatchScores);
           const worstScore = Math.min(...faceMatchScores);
 
@@ -598,17 +640,21 @@ export class KYCVerificationController {
         results.faceComparison = {
           score: faceMatchScore,
           strategy: comparisonStrategy,
-          ...(faceMatchScores.length > 1
-            ? { allScores: faceMatchScores }
-            : {}),
+          ...(faceMatchScores.length > 1 ? { allScores: faceMatchScores } : {}),
         } as any;
 
         console.log('\n' + '='.repeat(70));
         console.log('Face Matching Results:');
         console.log('='.repeat(70));
         console.log('   Strategy:', comparisonStrategy);
-        console.log('   Comparison Score:', (faceMatchScore * 100).toFixed(1) + '%');
-        console.log('   Threshold:', (FACE_MATCH_SUCCESS_THRESHOLD * 100).toFixed(1) + '%');
+        console.log(
+          '   Comparison Score:',
+          (faceMatchScore * 100).toFixed(1) + '%'
+        );
+        console.log(
+          '   Threshold:',
+          (FACE_MATCH_SUCCESS_THRESHOLD * 100).toFixed(1) + '%'
+        );
         console.log(
           '   Final Result:',
           faceMatchScore >= FACE_MATCH_SUCCESS_THRESHOLD
@@ -634,7 +680,8 @@ export class KYCVerificationController {
 
         console.log('Retrieving selfie quality assessment...');
         const inspectionForLiveness =
-          customerInspection ?? (await innovatricsClient.inspectCustomer(customerId));
+          customerInspection ??
+          (await innovatricsClient.inspectCustomer(customerId));
 
         const hasMask =
           inspectionForLiveness?.selfieInspection?.hasMask || false;
@@ -946,17 +993,17 @@ async function resolveImageSource(
     const longerSide = Math.max(metadata.width, metadata.height);
     if (kind === 'document' && longerSide < minDocumentDimension) {
       console.warn(
-        `Document image longer side ${longerSide}px is below recommended ${minDocumentDimension}px. Using original bytes without resizing.`,
+        `Document image longer side ${longerSide}px is below recommended ${minDocumentDimension}px. Using original bytes without resizing.`
       );
     }
     if (kind === 'selfie' && longerSide < minSelfieDimension) {
       console.warn(
-        `Selfie image longer side ${longerSide}px is below recommended ${minSelfieDimension}px. Using original bytes without resizing.`,
+        `Selfie image longer side ${longerSide}px is below recommended ${minSelfieDimension}px. Using original bytes without resizing.`
       );
     }
     if (longerSide > maxDimension) {
       console.warn(
-        `Image longer side ${longerSide}px exceeds Innovatrics ${maxDimension}px limit. Using original bytes; consider capturing at a lower resolution.`,
+        `Image longer side ${longerSide}px exceeds Innovatrics ${maxDimension}px limit. Using original bytes; consider capturing at a lower resolution.`
       );
     }
   }
@@ -994,10 +1041,7 @@ function extractBase64Payload(payload: InnovatricsImagePayload): string {
     return payload.replace(/\s+/g, '');
   }
 
-  const raw =
-    (payload as any)?.image?.data ??
-    (payload as any)?.data ??
-    null;
+  const raw = (payload as any)?.image?.data ?? (payload as any)?.data ?? null;
 
   if (typeof raw !== 'string' || !raw.trim()) {
     throw new Error('Innovatrics image payload is missing base64 data');
