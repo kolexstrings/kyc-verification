@@ -25,7 +25,7 @@ import {
 
 const innovatricsClient = new InnovatricsService();
 
-const FACE_MATCH_SUCCESS_THRESHOLD = 0.64;
+const FACE_MATCH_SUCCESS_THRESHOLD = 0.465;
 const LIVENESS_SUCCESS_STATUS = 'live';
 
 export interface KYCProfile {
