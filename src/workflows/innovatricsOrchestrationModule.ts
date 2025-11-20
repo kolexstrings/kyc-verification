@@ -76,11 +76,8 @@ export interface LivenessResult {
   status: string;
   isDeepfake?: boolean;
   deepfakeConfidence?: number;
-  method?: string;
-  indicators?: {
-    hasMask: boolean;
-    faceQuality: string;
-  };
+  method?: 'passive_liveness' | 'inspection_based' | string;
+  indicators?: Record<string, any>;
 }
 
 export interface VerificationFlowResult {
@@ -103,7 +100,10 @@ export interface VerificationFlowResult {
   livenessCheck?: LivenessResult;
 }
 
-export type SerializedVerificationResult = Omit<VerificationFlowResult, 'createdAt' | 'updatedAt'> & {
+export type SerializedVerificationResult = Omit<
+  VerificationFlowResult,
+  'createdAt' | 'updatedAt'
+> & {
   createdAt?: string;
   updatedAt?: string;
 };
@@ -142,7 +142,10 @@ interface HttpResponse<T> {
 }
 
 class HttpError extends Error {
-  constructor(message: string, public readonly response?: { status: number; data?: any }) {
+  constructor(
+    message: string,
+    public readonly response?: { status: number; data?: any }
+  ) {
     super(message);
     this.name = 'HttpError';
   }
@@ -151,14 +154,18 @@ class HttpError extends Error {
 export class InnovatricsEventWorkflow {
   private readonly requestTimeoutMs = 120000;
 
-  constructor(private readonly config: InnovatricsWorkflowConfig) {
-  }
+  constructor(private readonly config: InnovatricsWorkflowConfig) {}
 
   async run(input: VerificationInput): Promise<VerificationOutcome> {
     const documentImages = toArray(input.identificationDocumentImage);
     const additionalSelfiesInput = toArray(input.selfieImages);
-    const primarySelfieInput = typeof input.image === 'string' ? input.image.trim() : '';
-    const providedUserId = typeof input.userId === 'string' ? input.userId.trim() : '';
+    const primarySelfieInput =
+      typeof input.image === 'string' ? input.image.trim() : '';
+    const providedUserId =
+      typeof input.userId === 'string' ? input.userId.trim() : '';
+    const passiveLivenessEnabled =
+      (process.env.DIS_USE_PASSIVE_LIVENESS ?? 'true').toLowerCase() !==
+      'false';
 
     if (!documentImages[0] || !primarySelfieInput) {
       const failureEvent = this.createFailureEvent({
@@ -173,31 +180,39 @@ export class InnovatricsEventWorkflow {
     let customerId: string | undefined;
 
     try {
-      const documentFront = await resolveImageSource(documentImages[0], 'document');
+      const documentFront = await resolveImageSource(
+        documentImages[0],
+        'document'
+      );
       const documentBack = documentImages[1]
         ? await resolveImageSource(documentImages[1], 'document')
         : undefined;
-      const primarySelfie = await resolveImageSource(primarySelfieInput, 'selfie');
+      const primarySelfie = await resolveImageSource(
+        primarySelfieInput,
+        'selfie'
+      );
 
       const supplementalSelfies: ResolvedImage[] = [];
       for (const selfie of additionalSelfiesInput) {
         try {
           supplementalSelfies.push(await resolveImageSource(selfie, 'selfie'));
         } catch (selfieError) {
-          console.warn('Skipping invalid supplemental selfie image', selfieError);
+          console.warn(
+            'Skipping invalid supplemental selfie image',
+            selfieError
+          );
         }
       }
+
+      const additionalPassiveSelfies = supplementalSelfies
+        .map(selfie => selfie.base64?.replace(/\s+/g, '') ?? '')
+        .filter(value => value.length > 0);
 
       const customerResponse = await this.createCustomer();
       customerId = customerResponse.id;
 
       const externalId = providedUserId || `external_${Date.now()}`;
       const pubkey = externalId;
-
-      await this.storeCustomer(customerId, {
-        externalId,
-        onboardingStatus: 'IN_PROGRESS',
-      });
 
       const verification: VerificationFlowResult = {
         customerId,
@@ -213,11 +228,16 @@ export class InnovatricsEventWorkflow {
         frontImage: documentFront.base64,
         ...(documentBack ? { backImage: documentBack.base64 } : {}),
         ...(input.documentType ? { documentType: input.documentType } : {}),
-        ...(input.firstNationality ? { issuingCountry: input.firstNationality } : {}),
+        ...(input.firstNationality
+          ? { issuingCountry: input.firstNationality }
+          : {}),
       });
       verification.documentVerification = documentVerification;
 
-      const selfieUpload = await this.uploadSelfie(customerId, primarySelfie.base64);
+      const selfieUpload = await this.uploadSelfie(
+        customerId,
+        primarySelfie.base64
+      );
       verification.selfieUpload = selfieUpload;
 
       const primaryFaceDetection = await this.detectFace(primarySelfie.base64);
@@ -233,7 +253,10 @@ export class InnovatricsEventWorkflow {
       let comparisonStrategy: 'inspection' | 'manual' = 'inspection';
 
       const inspection = await this.inspectCustomer(customerId).catch(error => {
-        console.warn('Customer inspection failed; switching to manual face comparison.', error);
+        console.warn(
+          'Customer inspection failed; switching to manual face comparison.',
+          error
+        );
         return undefined;
       });
 
@@ -243,15 +266,20 @@ export class InnovatricsEventWorkflow {
         faceMatchScores.push(inspectionScore);
       } else {
         console.warn(
-          'Customer inspection missing documentPortraitComparison score; switching to manual fallback.',
+          'Customer inspection missing documentPortraitComparison score; switching to manual fallback.'
         );
       }
 
       if (faceMatchScore === null) {
         comparisonStrategy = 'manual';
 
-        const portraitImageData = await this.getDocumentPortrait(customerId).catch((error: unknown) => {
-          console.warn('Document portrait retrieval failed, falling back to front page', error);
+        const portraitImageData = await this.getDocumentPortrait(
+          customerId
+        ).catch((error: unknown) => {
+          console.warn(
+            'Document portrait retrieval failed, falling back to front page',
+            error
+          );
           return undefined;
         });
 
@@ -262,21 +290,31 @@ export class InnovatricsEventWorkflow {
           if (typeof portraitImageData === 'string') {
             return portraitImageData;
           }
-          const candidate = (portraitImageData as any)?.image?.data ?? (portraitImageData as any)?.data;
-          return typeof candidate === 'string' && candidate.length > 0 ? candidate : documentFront.base64;
+          const candidate =
+            (portraitImageData as any)?.image?.data ??
+            (portraitImageData as any)?.data;
+          return typeof candidate === 'string' && candidate.length > 0
+            ? candidate
+            : documentFront.base64;
         })();
 
-        const documentFaceResult = await this.detectFace(portraitBase64.replace(/\s+/g, ''));
-        const documentFaceTemplate = await this.getFaceTemplate(documentFaceResult.id);
+        const documentFaceResult = await this.detectFace(
+          portraitBase64.replace(/\s+/g, '')
+        );
+        const documentFaceTemplate = await this.getFaceTemplate(
+          documentFaceResult.id
+        );
         const referenceFaceTemplate = documentFaceTemplate?.data;
 
         if (!referenceFaceTemplate) {
-          throw new Error('Document face template is missing data for manual comparison');
+          throw new Error(
+            'Document face template is missing data for manual comparison'
+          );
         }
 
         const primaryComparison = await this.compareFaceWithTemplate(
           primaryFaceDetection.id,
-          referenceFaceTemplate,
+          referenceFaceTemplate
         );
         faceMatchScores.push(primaryComparison.score);
 
@@ -285,19 +323,24 @@ export class InnovatricsEventWorkflow {
             const supplementalFace = await this.detectFace(selfie.base64);
             const comparison = await this.compareFaceWithTemplate(
               supplementalFace.id,
-              referenceFaceTemplate,
+              referenceFaceTemplate
             );
             faceMatchScores.push(comparison.score);
             console.log(
-              `Supplemental selfie [${index + 1}] similarity score: ${(comparison.score * 100).toFixed(1)}%`,
+              `Supplemental selfie [${index + 1}] similarity score: ${(comparison.score * 100).toFixed(1)}%`
             );
           } catch (comparisonError) {
-            console.warn('Skipping supplemental selfie due to comparison error', comparisonError);
+            console.warn(
+              'Skipping supplemental selfie due to comparison error',
+              comparisonError
+            );
           }
         }
 
         if (!faceMatchScores.length) {
-          throw new Error('Manual face comparison failed to produce any scores');
+          throw new Error(
+            'Manual face comparison failed to produce any scores'
+          );
         }
 
         faceMatchScore = Math.max(...faceMatchScores);
@@ -313,27 +356,48 @@ export class InnovatricsEventWorkflow {
         strategy: comparisonStrategy,
       };
 
-      const inspectionForLiveness = inspection ?? (await this.inspectCustomer(customerId));
-      const hasMask = inspectionForLiveness?.selfieInspection?.hasMask ?? false;
-      const faceQuality = inspectionForLiveness?.selfieInspection?.faceQuality ?? 'unknown';
+      let finalLivenessResult: LivenessResult | null = null;
 
-      const livenessStatus = hasMask ? 'not_live' : 'live';
-      const livenessConfidence = hasMask ? 0 : 0.85;
+      if (passiveLivenessEnabled) {
+        try {
+          finalLivenessResult = await this.evaluatePassiveLiveness(customerId, {
+            additionalSelfies: additionalPassiveSelfies,
+            deepfakeCheck: true,
+          });
+        } catch (passiveError) {
+          console.warn(
+            'Passive liveness evaluation failed, falling back to inspection-based assessment.',
+            passiveError
+          );
+        }
+      }
 
-      const livenessResult: LivenessResult = {
-        confidence: livenessConfidence,
-        status: livenessStatus,
-        method: 'inspection_based',
-        indicators: {
-          hasMask,
-          faceQuality,
-        },
-      };
+      if (!finalLivenessResult) {
+        const inspectionForLiveness =
+          inspection ?? (await this.inspectCustomer(customerId));
+        const hasMask =
+          inspectionForLiveness?.selfieInspection?.hasMask ?? false;
+        const faceQuality =
+          inspectionForLiveness?.selfieInspection?.faceQuality ?? 'unknown';
 
-      verification.livenessCheck = livenessResult;
+        finalLivenessResult = {
+          confidence: hasMask ? 0 : 0.85,
+          status: hasMask ? 'not_live' : 'live',
+          method: 'inspection_based',
+          indicators: {
+            hasMask,
+            faceQuality,
+          },
+        };
+      }
 
-      const faceMatchPassed = faceMatchScores.length > 0 && faceMatchScore >= FACE_MATCH_SUCCESS_THRESHOLD;
-      const livenessPassed = livenessResult.status === LIVENESS_SUCCESS_STATUS;
+      verification.livenessCheck = finalLivenessResult;
+
+      const livenessResult = verification.livenessCheck;
+      const faceMatchPassed =
+        faceMatchScores.length > 0 &&
+        faceMatchScore >= FACE_MATCH_SUCCESS_THRESHOLD;
+      const livenessPassed = livenessResult?.status === LIVENESS_SUCCESS_STATUS;
 
       if (!faceMatchPassed || !livenessPassed) {
         verification.overallStatus = 'failed';
@@ -375,11 +439,6 @@ export class InnovatricsEventWorkflow {
       verification.overallStatus = 'completed';
       verification.updatedAt = new Date();
 
-      await this.storeCustomer(customerId, {
-        externalId,
-        onboardingStatus: 'FINISHED',
-      });
-
       const successEvent = this.createSuccessEvent({
         pubkey,
       });
@@ -405,13 +464,6 @@ export class InnovatricsEventWorkflow {
     return response.data;
   }
 
-  private async storeCustomer(
-    customerId: string,
-    payload: { externalId?: string; onboardingStatus: 'IN_PROGRESS' | 'FINISHED' }
-  ): Promise<void> {
-    await this.post(`/customers/${customerId}/store`, payload);
-  }
-
   private async verifyDocument(params: {
     customerId: string;
     frontImage: string;
@@ -419,7 +471,8 @@ export class InnovatricsEventWorkflow {
     documentType?: string;
     issuingCountry?: string;
   }): Promise<DocumentVerificationResult> {
-    const { customerId, frontImage, backImage, documentType, issuingCountry } = params;
+    const { customerId, frontImage, backImage, documentType, issuingCountry } =
+      params;
 
     const classificationAdvice: Record<string, any> = {};
     if (documentType) {
@@ -436,57 +489,65 @@ export class InnovatricsEventWorkflow {
       createDocumentPayload.advice = { classification: classificationAdvice };
     }
 
-    const documentResponse = await withRetry(() =>
-      this.put(`/customers/${customerId}/document`, createDocumentPayload),
-    {
-      shouldRetry: this.isRetryableError,
-    });
+    const documentResponse = await withRetry(
+      () =>
+        this.put(`/customers/${customerId}/document`, createDocumentPayload),
+      {
+        shouldRetry: this.isRetryableError,
+      }
+    );
 
     const pages: DocumentPageResult[] = [];
 
-    const frontPageResponse = await withRetry(() =>
-      this.put(`/customers/${customerId}/document/pages`, {
-        image: this.buildImagePayload(frontImage),
-        advice: {
-          classification: {
-            pageTypes: ['front'],
-          },
-        },
-      }),
-    {
-      shouldRetry: this.isRetryableError,
-    });
-    pages.push(frontPageResponse.data);
-
-    if (backImage) {
-      const backPageResponse = await withRetry(() =>
+    const frontPageResponse = await withRetry(
+      () =>
         this.put(`/customers/${customerId}/document/pages`, {
-          image: this.buildImagePayload(backImage),
+          image: this.buildImagePayload(frontImage),
           advice: {
             classification: {
-              pageTypes: ['back'],
+              pageTypes: ['front'],
             },
           },
         }),
       {
         shouldRetry: this.isRetryableError,
-      });
+      }
+    );
+    pages.push(frontPageResponse.data);
+
+    if (backImage) {
+      const backPageResponse = await withRetry(
+        () =>
+          this.put(`/customers/${customerId}/document/pages`, {
+            image: this.buildImagePayload(backImage),
+            advice: {
+              classification: {
+                pageTypes: ['back'],
+              },
+            },
+          }),
+        {
+          shouldRetry: this.isRetryableError,
+        }
+      );
       pages.push(backPageResponse.data);
     }
 
-    const inspectionResponse = await withRetry(() =>
-      this.post(`/customers/${customerId}/document/inspect`),
-    {
-      shouldRetry: this.isRetryableError,
-    });
+    const inspectionResponse = await withRetry(
+      () => this.post(`/customers/${customerId}/document/inspect`),
+      {
+        shouldRetry: this.isRetryableError,
+      }
+    );
 
     let disclosedInspection: any | undefined;
     try {
-      const disclosedResponse = await withRetry(() =>
-        this.post(`/customers/${customerId}/document/inspect/disclose`),
-      {
-        shouldRetry: this.isRetryableError,
-      });
+      const disclosedResponse = await withRetry(
+        () => this.post(`/customers/${customerId}/document/inspect/disclose`),
+        {
+          shouldRetry: this.isRetryableError,
+        }
+      );
       disclosedInspection = disclosedResponse.data;
     } catch (discloseError) {
       console.warn('Document inspection disclosure failed', discloseError);
@@ -544,22 +605,32 @@ export class InnovatricsEventWorkflow {
     return response.data;
   }
 
-  private async getFaceTemplate(faceId: string): Promise<{ data: string; version?: string }> {
-    const response = await this.get<{ data: string; version?: string }>(`/faces/${faceId}/face-template`);
+  private async getFaceTemplate(
+    faceId: string
+  ): Promise<{ data: string; version?: string }> {
+    const response = await this.get<{ data: string; version?: string }>(
+      `/faces/${faceId}/face-template`
+    );
     return response.data;
   }
 
   private async compareFaceWithTemplate(
     probeFaceId: string,
-    referenceFaceTemplate: string,
+    referenceFaceTemplate: string
   ): Promise<{ score: number }> {
-    const response = await this.post<{ score: number }>(`/faces/${probeFaceId}/similarity`, {
-      referenceFaceTemplate,
-    });
+    const response = await this.post<{ score: number }>(
+      `/faces/${probeFaceId}/similarity`,
+      {
+        referenceFaceTemplate,
+      }
+    );
     return response.data;
   }
 
-  private async compareFaces(probeFaceId: string, referenceFaceId: string): Promise<{ score: number }> {
+  private async compareFaces(
+    probeFaceId: string,
+    referenceFaceId: string
+  ): Promise<{ score: number }> {
     const response = await this.post(`/faces/${probeFaceId}/similarity`, {
       referenceFace: `/api/v1/faces/${referenceFaceId}`,
     });
@@ -577,7 +648,9 @@ export class InnovatricsEventWorkflow {
   }
 
   private async getDocumentPortrait(customerId: string): Promise<any> {
-    const response = await this.get(`/customers/${customerId}/document/portrait`);
+    const response = await this.get(
+      `/customers/${customerId}/document/portrait`
+    );
     return response.data;
   }
 
@@ -642,30 +715,34 @@ export class InnovatricsEventWorkflow {
     });
   }
 
-  private async request<T = any>(method: HttpMethod, path: string, body?: unknown): Promise<HttpResponse<T>> {
+  private async request<T = any>(
+    method: HttpMethod,
+    path: string,
+    body?: unknown
+  ): Promise<HttpResponse<T>> {
     const url = new URL(path, this.config.baseUrl);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.requestTimeoutMs);
 
     try {
       const hasBody = body !== undefined;
-      const response = await fetch(
-        url,
-        {
-          method,
-          headers: this.buildHeaders(hasBody),
-          signal: controller.signal,
-          ...(hasBody ? { body: JSON.stringify(body) } : {}),
-        }
-      );
+      const response = await fetch(url, {
+        method,
+        headers: this.buildHeaders(hasBody),
+        signal: controller.signal,
+        ...(hasBody ? { body: JSON.stringify(body) } : {}),
+      });
 
       const parsedBody = await this.parseResponseBody(response);
 
       if (!response.ok) {
-        throw new HttpError(`Request failed with status ${response.status}` as const, {
-          status: response.status,
-          data: parsedBody,
-        });
+        throw new HttpError(
+          `Request failed with status ${response.status}` as const,
+          {
+            status: response.status,
+            data: parsedBody,
+          }
+        );
       }
 
       return { data: parsedBody as T };
@@ -679,7 +756,10 @@ export class InnovatricsEventWorkflow {
     }
   }
 
-  private post<T = any>(path: string, body?: unknown): Promise<HttpResponse<T>> {
+  private post<T = any>(
+    path: string,
+    body?: unknown
+  ): Promise<HttpResponse<T>> {
     return this.request('POST', path, body);
   }
 
@@ -765,7 +845,12 @@ export class InnovatricsEventWorkflow {
   }
 
   private createFailureEvent(params: FailureEventParams): WorkflowEvent {
-    const { pubkey, userId, reason = 'insufficient Information', content } = params;
+    const {
+      pubkey,
+      userId,
+      reason = 'insufficient Information',
+      content,
+    } = params;
     return {
       kind: 1984,
       created_at: Math.floor(Date.now() / 1000),
@@ -783,7 +868,9 @@ function toArray(value?: string[] | string): string[] {
     return [];
   }
   if (Array.isArray(value)) {
-    return value.filter(item => typeof item === 'string' && item.trim().length > 0);
+    return value.filter(
+      item => typeof item === 'string' && item.trim().length > 0
+    );
   }
   if (typeof value === 'string' && value.trim().length > 0) {
     return [value];
@@ -810,7 +897,10 @@ function serializeResult(
   };
 }
 
-async function resolveImageSource(raw: string, kind: 'document' | 'selfie'): Promise<ResolvedImage> {
+async function resolveImageSource(
+  raw: string,
+  kind: 'document' | 'selfie'
+): Promise<ResolvedImage> {
   const normalizedInput = normalizeImagePayload(raw);
   const sanitizedBase64 = normalizedInput.base64?.replace(/\s+/g, '') ?? '';
 

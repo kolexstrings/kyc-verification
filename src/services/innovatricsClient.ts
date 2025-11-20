@@ -62,7 +62,8 @@ export interface CreateLivenessRequest {
   options?: LivenessCheckOptions;
 }
 
-export const DEFAULT_LIVENESS_CHALLENGE: LivenessChallengeType = 'EYE_GAZE_LIVENESS';
+export const DEFAULT_LIVENESS_CHALLENGE: LivenessChallengeType =
+  'EYE_GAZE_LIVENESS';
 
 export function normalizeLivenessChallengeType(
   rawType?: string | null
@@ -170,15 +171,20 @@ export class InnovatricsService {
         console.error('=== INNOVATRICS API ERROR (DETAILED) ===');
         console.error('Status:', error.response?.status);
         console.error('Status Text:', error.response?.statusText);
-        console.error('Error Data:', JSON.stringify(error.response?.data, null, 2));
+        console.error(
+          'Error Data:',
+          JSON.stringify(error.response?.data, null, 2)
+        );
         console.error('Error Headers:', error.response?.headers);
         console.error('Request URL:', error.config?.url);
         console.error('Request Method:', error.config?.method);
-        console.error('Request Data Preview:', 
-          error.config?.data ? 
-            (typeof error.config.data === 'string' ? 
-              error.config.data.substring(0, 500) + '...' : 
-              JSON.stringify(error.config.data, null, 2).substring(0, 500) + '...') 
+        console.error(
+          'Request Data Preview:',
+          error.config?.data
+            ? typeof error.config.data === 'string'
+              ? error.config.data.substring(0, 500) + '...'
+              : JSON.stringify(error.config.data, null, 2).substring(0, 500) +
+                '...'
             : 'N/A'
         );
         console.error('Full Error Message:', error.message);
@@ -227,32 +233,10 @@ export class InnovatricsService {
     return image;
   }
 
-  async storeCustomer(
-    customerId: string,
-    payload: CustomerStoreRequest
-  ): Promise<void> {
-    try {
-      await this.client.post(`/customers/${customerId}/store`, payload);
-    } catch (error: any) {
-      throw new Error(
-        `Failed to store customer: ${error.response?.data?.message || error.message}`
-      );
-    }
-  }
-
-  async updateCustomerOnboardingStatus(
-    customerId: string,
-    status: 'IN_PROGRESS' | 'FINISHED',
-    externalId?: string
-  ): Promise<void> {
-    return this.storeCustomer(customerId, {
-      onboardingStatus: status,
-      ...(externalId ? { externalId } : {}),
-    });
-  }
-
   // Face Biometrics
-  async detectFace(imageData: InnovatricsImagePayload): Promise<CreateFaceResponse> {
+  async detectFace(
+    imageData: InnovatricsImagePayload
+  ): Promise<CreateFaceResponse> {
     try {
       const response = await this.client.post('/faces', {
         image: this.buildImagePayload(imageData),
@@ -309,7 +293,9 @@ export class InnovatricsService {
   // Customer Inspection - compares document portrait with selfie
   async inspectCustomer(customerId: string): Promise<any> {
     try {
-      const response = await this.client.post(`/customers/${customerId}/inspect`);
+      const response = await this.client.post(
+        `/customers/${customerId}/inspect`
+      );
       return response.data;
     } catch (error: any) {
       throw new Error(
@@ -330,13 +316,19 @@ export class InnovatricsService {
         if (challengeRequest.type) {
           payload.type = challengeRequest.type;
         }
-        if (challengeRequest.options && Object.keys(challengeRequest.options).length > 0) {
+        if (
+          challengeRequest.options &&
+          Object.keys(challengeRequest.options).length > 0
+        ) {
           payload.options = challengeRequest.options;
         }
       }
-      
-      console.log('DEBUG: Liveness challenge payload:', JSON.stringify(payload));
-      
+
+      console.log(
+        'DEBUG: Liveness challenge payload:',
+        JSON.stringify(payload)
+      );
+
       const response = await this.client.put(
         `/customers/${customerId}/liveness/records/challenge`,
         payload
@@ -362,13 +354,18 @@ export class InnovatricsService {
 
   async uploadAdditionalSelfieLiveness(
     customerId: string,
-    selfieData: InnovatricsImagePayload
+    selfieData: InnovatricsImagePayload,
+    assertion: 'NONE' | 'NEUTRAL' | 'SMILE' | 'BLINK' | 'HEAD_TURN' = 'NONE'
   ): Promise<void> {
     try {
       await this.client.post(`/customers/${customerId}/liveness/selfies`, {
+        assertion,
         image: this.buildImagePayload(selfieData),
       });
-      console.log('Additional liveness selfie uploaded for customer:', customerId);
+      console.log(
+        'Additional liveness selfie uploaded for customer:',
+        customerId
+      );
     } catch (error: any) {
       throw new Error(
         `Failed to upload additional selfie: ${error.response?.data?.message || error.message}`
@@ -440,7 +437,10 @@ export class InnovatricsService {
         type: 'PASSIVE_LIVENESS',
       };
 
-      console.log('DEBUG: Passive liveness evaluation payload:', JSON.stringify(payload));
+      console.log(
+        'DEBUG: Passive liveness evaluation payload:',
+        JSON.stringify(payload)
+      );
 
       const response = await this.client.post(
         `/customers/${customerId}/liveness/evaluation`,
@@ -448,7 +448,29 @@ export class InnovatricsService {
       );
 
       const result = response.data;
-      console.log('Passive liveness raw response:', JSON.stringify(result, null, 2));
+      const normalizedConfidence =
+        typeof result?.confidence === 'number'
+          ? result.confidence
+          : typeof result?.score === 'number'
+            ? result.score
+            : 0;
+      const normalizedStatus = ((): 'live' | 'not_live' | 'suspicious' => {
+        if (
+          result?.status === 'live' ||
+          result?.status === 'not_live' ||
+          result?.status === 'suspicious'
+        ) {
+          return result.status;
+        }
+        if (normalizedConfidence >= 0.5) {
+          return 'live';
+        }
+        return 'not_live';
+      })();
+      console.log(
+        'Passive liveness raw response:',
+        JSON.stringify(result, null, 2)
+      );
 
       // Check for errors in response
       if (result.errorCode) {
@@ -457,8 +479,12 @@ export class InnovatricsService {
           console.warn('   This usually means:');
           console.warn('   - Selfie image quality is too low');
           console.warn('   - Face not clearly visible');
-          console.warn('   - Image too small (recommend 1800px+ with clear face)');
-          console.warn('   - Consider uploading additional selfie frames via additionalSelfies option');
+          console.warn(
+            '   - Image too small (recommend 1800px+ with clear face)'
+          );
+          console.warn(
+            '   - Consider uploading additional selfie frames via additionalSelfies option'
+          );
         }
         // Return default values when not enough data
         return {
@@ -474,7 +500,10 @@ export class InnovatricsService {
           livenessResources: ['PASSIVE'],
         };
 
-        console.log('DEBUG: Extended deepfake evaluation payload:', JSON.stringify(extendedPayload));
+        console.log(
+          'DEBUG: Extended deepfake evaluation payload:',
+          JSON.stringify(extendedPayload)
+        );
 
         const extendedResponse = await this.client.post(
           `/customers/${customerId}/liveness/evaluation/extended`,
@@ -482,19 +511,22 @@ export class InnovatricsService {
         );
 
         const extendedResult = extendedResponse.data;
-        console.log('Deepfake raw response:', JSON.stringify(extendedResult, null, 2));
+        console.log(
+          'Deepfake raw response:',
+          JSON.stringify(extendedResult, null, 2)
+        );
 
         return {
-          confidence: result.confidence || 0,
-          status: result.status as 'live' | 'not_live' | 'suspicious',
+          confidence: normalizedConfidence,
+          status: normalizedStatus,
           isDeepfake: extendedResult.isDeepfake,
           deepfakeConfidence: extendedResult.confidence,
         };
       }
 
       return {
-        confidence: result.confidence || 0,
-        status: result.status as 'live' | 'not_live' | 'suspicious',
+        confidence: normalizedConfidence,
+        status: normalizedStatus,
       };
     } catch (error: any) {
       throw new Error(`Liveness evaluation failed: ${error.message}`);
@@ -515,10 +547,13 @@ export class InnovatricsService {
   async verifyDocument(
     request: DocumentVerificationRequest
   ): Promise<DocumentVerificationResult> {
-    const { customerId, frontImage, backImage, documentType, issuingCountry } = request;
+    const { customerId, frontImage, backImage, documentType, issuingCountry } =
+      request;
 
     const frontImagePayload = this.buildImagePayload(frontImage);
-    const backImagePayload = backImage ? this.buildImagePayload(backImage) : undefined;
+    const backImagePayload = backImage
+      ? this.buildImagePayload(backImage)
+      : undefined;
 
     try {
       const classificationAdvice: Record<string, any> = {};
@@ -543,7 +578,15 @@ export class InnovatricsService {
         shouldRetry: (error: any) => this.isRetryableError(error),
         ...(request.onRetry
           ? {
-              onRetry: ({ attempt, delayMs, error }: { attempt: number; delayMs: number; error: any }) => {
+              onRetry: ({
+                attempt,
+                delayMs,
+                error,
+              }: {
+                attempt: number;
+                delayMs: number;
+                error: any;
+              }) => {
                 request.onRetry?.({
                   stage: 'create_document',
                   attempt,
@@ -557,7 +600,10 @@ export class InnovatricsService {
 
       const documentResponse = await withRetry(
         () =>
-          this.client.put(`/customers/${customerId}/document`, createDocumentPayload),
+          this.client.put(
+            `/customers/${customerId}/document`,
+            createDocumentPayload
+          ),
         documentRetryOptions
       );
 
@@ -567,7 +613,15 @@ export class InnovatricsService {
         shouldRetry: (error: any) => this.isRetryableError(error),
         ...(request.onRetry
           ? {
-              onRetry: ({ attempt, delayMs, error }: { attempt: number; delayMs: number; error: any }) => {
+              onRetry: ({
+                attempt,
+                delayMs,
+                error,
+              }: {
+                attempt: number;
+                delayMs: number;
+                error: any;
+              }) => {
                 request.onRetry?.({
                   stage: 'upload_page_front',
                   attempt,
@@ -598,7 +652,15 @@ export class InnovatricsService {
           shouldRetry: (error: any) => this.isRetryableError(error),
           ...(request.onRetry
             ? {
-                onRetry: ({ attempt, delayMs, error }: { attempt: number; delayMs: number; error: any }) => {
+                onRetry: ({
+                  attempt,
+                  delayMs,
+                  error,
+                }: {
+                  attempt: number;
+                  delayMs: number;
+                  error: any;
+                }) => {
                   request.onRetry?.({
                     stage: 'upload_page_back',
                     attempt,
@@ -629,7 +691,15 @@ export class InnovatricsService {
         shouldRetry: (error: any) => this.isRetryableError(error),
         ...(request.onRetry
           ? {
-              onRetry: ({ attempt, delayMs, error }: { attempt: number; delayMs: number; error: any }) => {
+              onRetry: ({
+                attempt,
+                delayMs,
+                error,
+              }: {
+                attempt: number;
+                delayMs: number;
+                error: any;
+              }) => {
                 request.onRetry?.({
                   stage: 'inspect_document',
                   attempt,
@@ -647,10 +717,12 @@ export class InnovatricsService {
       );
       console.log(
         'Innovatrics document inspection response:',
-        JSON.stringify(inspectionResponse.data, null, 2),
+        JSON.stringify(inspectionResponse.data, null, 2)
       );
       if (!inspectionResponse.data?.documentPortrait) {
-        console.warn('Document inspection response missing documentPortrait block.');
+        console.warn(
+          'Document inspection response missing documentPortrait block.'
+        );
       }
 
       let disclosedInspection: any | undefined;
@@ -659,7 +731,15 @@ export class InnovatricsService {
           shouldRetry: (error: any) => this.isRetryableError(error),
           ...(request.onRetry
             ? {
-                onRetry: ({ attempt, delayMs, error }: { attempt: number; delayMs: number; error: any }) => {
+                onRetry: ({
+                  attempt,
+                  delayMs,
+                  error,
+                }: {
+                  attempt: number;
+                  delayMs: number;
+                  error: any;
+                }) => {
                   request.onRetry?.({
                     stage: 'disclose_inspection',
                     attempt,
@@ -672,16 +752,21 @@ export class InnovatricsService {
         } satisfies RetryOptions;
 
         const disclosedResponse = await withRetry(
-          () => this.client.post(`/customers/${customerId}/document/inspect/disclose`),
+          () =>
+            this.client.post(
+              `/customers/${customerId}/document/inspect/disclose`
+            ),
           discloseRetryOptions
         );
         disclosedInspection = disclosedResponse.data;
         console.log(
           'Innovatrics disclosed document inspection:',
-          JSON.stringify(disclosedInspection, null, 2),
+          JSON.stringify(disclosedInspection, null, 2)
         );
         if (!disclosedInspection?.documentPortrait) {
-          console.warn('Disclosed document inspection missing documentPortrait block.');
+          console.warn(
+            'Disclosed document inspection missing documentPortrait block.'
+          );
         }
       } catch (discloseError: any) {
         console.warn('Document inspection disclosure failed:', {
@@ -690,7 +775,8 @@ export class InnovatricsService {
         });
       }
 
-      const frontPage = pages.find(page => page.pageType === 'front') ?? pages[0];
+      const frontPage =
+        pages.find(page => page.pageType === 'front') ?? pages[0];
       const collectedWarnings = pages.flatMap(page => page.warnings ?? []);
       const collectedErrors = pages
         .map(page => page.errorCode)

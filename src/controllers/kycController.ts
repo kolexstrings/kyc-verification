@@ -28,6 +28,13 @@ const innovatricsClient = new InnovatricsService();
 const FACE_MATCH_SUCCESS_THRESHOLD = 0.465;
 const LIVENESS_SUCCESS_STATUS = 'live';
 
+interface LivenessResultPayload {
+  status: string;
+  confidence: number;
+  method: string;
+  indicators?: Record<string, any>;
+}
+
 export interface KYCProfile {
   createdAt: number;
   phoneNumber: string;
@@ -195,32 +202,6 @@ export class KYCVerificationController {
         providedUserId || `${kycData.name}_${kycData.surname}_${Date.now()}`;
       const userIdForTracking = externalId;
       userPubKey = userIdForTracking;
-
-      // Step 2: Store customer in Trust Platform with external ID
-      console.log('Linking Innovatrics customer to external platform ID', {
-        innovatricsCustomerId: customer.id,
-        externalId,
-        onboardingStatus: 'IN_PROGRESS',
-      });
-      if (process.env.DIS_SKIP_STORE !== 'true') {
-        try {
-          await innovatricsClient.storeCustomer(customer.id, {
-            externalId,
-            onboardingStatus: 'IN_PROGRESS',
-          });
-          console.log('Innovatrics acknowledged customer linkage');
-        } catch (error: any) {
-          if (error.message?.includes('404')) {
-            console.warn(
-              'DIS storeCustomer endpoint unavailable; continuing without linkage update'
-            );
-          } else {
-            throw error;
-          }
-        }
-      } else {
-        console.warn('DIS storeCustomer skipped (DIS_SKIP_STORE=true)');
-      }
 
       await initializeOnboardingRecord({
         userId: userIdForTracking,
@@ -679,7 +660,7 @@ export class KYCVerificationController {
         console.log('='.repeat(70));
 
         console.log('Retrieving selfie quality assessment...');
-        const inspectionForLiveness =
+        let inspectionForLiveness =
           customerInspection ??
           (await innovatricsClient.inspectCustomer(customerId));
 
@@ -688,42 +669,122 @@ export class KYCVerificationController {
         const faceQuality =
           inspectionForLiveness?.selfieInspection?.faceQuality || 'unknown';
 
-        const livenessResult = {
-          status: hasMask ? 'not_live' : 'live',
-          confidence: hasMask ? 0 : 0.85,
-          method: 'inspection_based',
-          indicators: {
-            hasMask,
-            faceQuality,
-          },
-        };
+        const passiveLivenessEnabled =
+          (process.env.DIS_USE_PASSIVE_LIVENESS ?? 'true').toLowerCase() !==
+          'false';
+
+        const additionalSelfiePayloads = selfieImagesFromBody
+          .map((payload, index) => {
+            if (!payload) {
+              return null;
+            }
+            try {
+              return extractBase64Payload(payload);
+            } catch (error: any) {
+              console.warn(
+                `Failed to normalize additional selfie payload #${index + 1} for passive liveness:`,
+                error?.message || error
+              );
+              return null;
+            }
+          })
+          .filter((value): value is string => Boolean(value));
+
+        let livenessResultPayload: LivenessResultPayload | null = null;
+
+        if (passiveLivenessEnabled) {
+          try {
+            console.log(
+              '\nInvoking Innovatrics passive liveness evaluation...'
+            );
+            const passiveResult = await innovatricsClient.evaluateLiveness(
+              customerId,
+              {
+                additionalSelfies: additionalSelfiePayloads,
+                deepfakeCheck: true,
+              }
+            );
+
+            livenessResultPayload = {
+              status: passiveResult.status,
+              confidence: passiveResult.confidence,
+              method: 'passive_liveness',
+              indicators: {
+                isDeepfake: passiveResult.isDeepfake ?? false,
+                deepfakeConfidence: passiveResult.deepfakeConfidence,
+              },
+            };
+
+            console.log(
+              'Passive liveness result:',
+              JSON.stringify(livenessResultPayload, null, 2)
+            );
+          } catch (passiveError: any) {
+            console.warn(
+              'Passive liveness evaluation failed, falling back to inspection-based assessment.',
+              passiveError?.message || passiveError
+            );
+          }
+        }
+
+        if (!livenessResultPayload) {
+          console.log(
+            '\nFalling back to inspection-based liveness heuristic...'
+          );
+          if (!inspectionForLiveness) {
+            inspectionForLiveness =
+              await innovatricsClient.inspectCustomer(customerId);
+          }
+
+          const fallbackHasMask =
+            inspectionForLiveness?.selfieInspection?.hasMask || false;
+          const fallbackFaceQuality =
+            inspectionForLiveness?.selfieInspection?.faceQuality || 'unknown';
+
+          livenessResultPayload = {
+            status: fallbackHasMask ? 'not_live' : 'live',
+            confidence: fallbackHasMask ? 0 : 0.85,
+            method: 'inspection_based',
+            indicators: {
+              hasMask: fallbackHasMask,
+              faceQuality: fallbackFaceQuality,
+            },
+          };
+        }
 
         results.livenessCheck = {
-          confidence: livenessResult.confidence,
-          status: livenessResult.status,
-        };
+          confidence: livenessResultPayload.confidence,
+          status: livenessResultPayload.status,
+          method: livenessResultPayload.method,
+          indicators: livenessResultPayload.indicators,
+        } as any;
 
         console.log('\nSUCCESS: Liveness check completed');
-        console.log('   Status:', livenessResult.status.toUpperCase());
+        console.log('   Status:', livenessResultPayload.status.toUpperCase());
         console.log(
           '   Confidence:',
-          (livenessResult.confidence * 100).toFixed(1) + '%'
+          (livenessResultPayload.confidence * 100).toFixed(1) + '%'
         );
-        console.log('   Method: Inspection-based quality assessment');
-        console.log('   Has Mask:', hasMask ? 'YES (suspicious)' : 'NO');
-        console.log('   Face Quality:', faceQuality);
+        console.log('   Method:', livenessResultPayload.method);
+        if (livenessResultPayload.indicators) {
+          console.log(
+            '   Indicators:',
+            JSON.stringify(livenessResultPayload.indicators)
+          );
+        }
         console.log('='.repeat(70) + '\n');
 
         await recordLivenessResult(customerId, {
-          livenessResult,
+          livenessResult: livenessResultPayload,
           image: primarySelfieSource.normalized,
         });
 
         const faceMatchPassed =
           typeof faceMatchScore === 'number' &&
           faceMatchScore >= FACE_MATCH_SUCCESS_THRESHOLD;
+        const livenessResult = results.livenessCheck;
         const normalizedLivenessStatus = (
-          livenessResult.status ?? ''
+          livenessResult?.status ?? ''
         ).toLowerCase();
         const livenessPassed =
           normalizedLivenessStatus === LIVENESS_SUCCESS_STATUS;
@@ -786,18 +847,6 @@ export class KYCVerificationController {
         results.updatedAt = new Date();
 
         await markFinished(customerId);
-        console.log(
-          'Updating Innovatrics customer onboarding status to FINISHED',
-          {
-            innovatricsCustomerId: customerId,
-            externalId,
-          }
-        );
-        await innovatricsClient.storeCustomer(customerId, {
-          externalId,
-          onboardingStatus: 'FINISHED',
-        });
-        console.log('Innovatrics confirmed onboarding status update');
 
         // Final success response
         console.log('\n' + '='.repeat(70));
