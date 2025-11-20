@@ -113,7 +113,7 @@ interface ResolvedImage {
   base64: string;
 }
 
-const FACE_MATCH_SUCCESS_THRESHOLD = 0.64;
+const FACE_MATCH_SUCCESS_THRESHOLD = 0.465;
 const LIVENESS_SUCCESS_STATUS = 'live';
 const MIN_DOCUMENT_DIMENSION = 1800;
 const MIN_SELFIE_DIMENSION = 720;
@@ -397,7 +397,9 @@ export class InnovatricsEventWorkflow {
       const faceMatchPassed =
         faceMatchScores.length > 0 &&
         faceMatchScore >= FACE_MATCH_SUCCESS_THRESHOLD;
-      const livenessPassed = livenessResult?.status === LIVENESS_SUCCESS_STATUS;
+      const livenessPassed =
+        (livenessResult?.status ?? '').toLowerCase() ===
+        LIVENESS_SUCCESS_STATUS;
 
       if (!faceMatchPassed || !livenessPassed) {
         verification.overallStatus = 'failed';
@@ -662,32 +664,84 @@ export class InnovatricsEventWorkflow {
 
     if (options.additionalSelfies && options.additionalSelfies.length > 0) {
       for (const selfie of options.additionalSelfies) {
-        await this.uploadAdditionalSelfie(customerId, selfie);
+        await this.uploadAdditionalSelfie(customerId, selfie, 'NONE');
       }
     }
 
+    const evaluationPayload = { type: 'PASSIVE_LIVENESS' };
+    console.log(
+      'DEBUG: Passive liveness evaluation payload:',
+      JSON.stringify(evaluationPayload)
+    );
+
     const evaluationResponse = await this.post(
       `/customers/${customerId}/liveness/evaluation`,
-      {
-        type: 'PASSIVE_LIVENESS',
-      }
+      evaluationPayload
     );
 
     const baseResult = evaluationResponse.data ?? {};
+    const normalizedConfidence =
+      typeof baseResult?.confidence === 'number'
+        ? baseResult.confidence
+        : typeof baseResult?.score === 'number'
+          ? baseResult.score
+          : 0;
+    const normalizedStatus = ((): 'live' | 'not_live' | 'suspicious' => {
+      if (
+        baseResult?.status === 'live' ||
+        baseResult?.status === 'not_live' ||
+        baseResult?.status === 'suspicious'
+      ) {
+        return baseResult.status;
+      }
+      if (normalizedConfidence >= 0.5) {
+        return 'live';
+      }
+      return 'not_live';
+    })();
+
+    console.log(
+      'Passive liveness raw response:',
+      JSON.stringify(baseResult, null, 2)
+    );
+
+    if ((baseResult as any)?.errorCode) {
+      console.warn(
+        '⚠️  Passive liveness returned error:',
+        baseResult.errorCode
+      );
+      return {
+        confidence: 0,
+        status: 'not_live',
+        method: 'passive_liveness',
+      };
+    }
 
     if (options.deepfakeCheck) {
       try {
+        const deepfakePayload = {
+          type: 'DEEPFAKE',
+          livenessResources: ['PASSIVE'],
+        };
+        console.log(
+          'DEBUG: Extended deepfake evaluation payload:',
+          JSON.stringify(deepfakePayload)
+        );
+
         const deepfakeResponse = await this.post(
           `/customers/${customerId}/liveness/evaluation/extended`,
-          {
-            type: 'DEEPFAKE',
-            livenessResources: ['PASSIVE'],
-          }
+          deepfakePayload
         );
         const deepfakeResult = deepfakeResponse.data ?? {};
+        console.log(
+          'Deepfake raw response:',
+          JSON.stringify(deepfakeResult, null, 2)
+        );
+
         return {
-          confidence: baseResult.confidence ?? 0,
-          status: baseResult.status ?? 'not_live',
+          confidence: normalizedConfidence,
+          status: normalizedStatus,
+          method: 'passive_liveness',
           isDeepfake: deepfakeResult.isDeepfake,
           deepfakeConfidence: deepfakeResult.confidence,
         };
@@ -697,8 +751,9 @@ export class InnovatricsEventWorkflow {
     }
 
     return {
-      confidence: baseResult.confidence ?? 0,
-      status: baseResult.status ?? 'not_live',
+      confidence: normalizedConfidence,
+      status: normalizedStatus,
+      method: 'passive_liveness',
     };
   }
 
@@ -708,9 +763,11 @@ export class InnovatricsEventWorkflow {
 
   private async uploadAdditionalSelfie(
     customerId: string,
-    imageBase64: string
+    imageBase64: string,
+    assertion: 'NONE' | 'NEUTRAL' | 'SMILE' | 'BLINK' | 'HEAD_TURN' = 'NONE'
   ): Promise<void> {
     await this.post(`/customers/${customerId}/liveness/selfies`, {
+      assertion,
       image: this.buildImagePayload(imageBase64),
     });
   }
