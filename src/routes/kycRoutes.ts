@@ -1,13 +1,17 @@
-import { Router } from 'express';
+import { Router, Request, Response } from 'express';
 import { body } from 'express-validator';
 import { KYCVerificationController } from '../controllers/kycController';
+import { InnovatricsWorkflowController } from '../controllers/innovatricsWorkflowController';
+import { config } from '../config/env';
 
 // Validation middleware
 const validateKYCProfile = [
   body('identificationDocumentImage')
     .optional()
     .custom(value => Array.isArray(value) || typeof value === 'string')
-    .withMessage('identificationDocumentImage must be provided as base64 JSON array/string'),
+    .withMessage(
+      'identificationDocumentImage must be provided as base64 JSON array/string'
+    ),
   body('image')
     .optional()
     .isString()
@@ -32,12 +36,23 @@ const validateKYCProfile = [
     .withMessage('userId must be a valid string if provided'),
   body('documentType')
     .optional()
-    .isIn(['passport', 'id_card', 'driver_license', 'residence_permit', 'visa', 'other'])
-    .withMessage('documentType must be one of: passport, id_card, driver_license, residence_permit, visa, other if provided'),
+    .isIn([
+      'passport',
+      'id_card',
+      'driver_license',
+      'residence_permit',
+      'visa',
+      'other',
+    ])
+    .withMessage(
+      'documentType must be one of: passport, id_card, driver_license, residence_permit, visa, other if provided'
+    ),
   body('challengeType')
     .optional()
     .isIn(['passive', 'motion', 'expression'])
-    .withMessage('challengeType must be one of: passive, motion, expression if provided'),
+    .withMessage(
+      'challengeType must be one of: passive, motion, expression if provided'
+    ),
 ];
 
 // Helper function to handle validation errors
@@ -54,6 +69,19 @@ const handleValidationErrors = (req: any, res: any, next: any) => {
 };
 
 const router = Router();
+
+const kycVerifyHandler = (req: Request, res: Response) => {
+  const useWorkflow = config.features.useInnovatricsWorkflow;
+  console.log(
+    `[KYC Verify] Using ${useWorkflow ? 'Innovatrics workflow' : 'legacy KYC controller'}`
+  );
+
+  if (useWorkflow) {
+    return InnovatricsWorkflowController.processKYCProfile(req, res);
+  }
+
+  return KYCVerificationController.processKYCProfile(req, res);
+};
 
 /**
  * @swagger
@@ -226,7 +254,7 @@ router.post(
   '/verify',
   validateKYCProfile,
   handleValidationErrors,
-  KYCVerificationController.processKYCProfile
+  kycVerifyHandler
 );
 
 export default router;

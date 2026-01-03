@@ -131,8 +131,10 @@ interface SuccessEventParams {
 }
 
 export interface VerificationOutcome {
-  event: WorkflowEvent;
+  event?: WorkflowEvent;
   results?: SerializedVerificationResult;
+  // Allow raw verification results for direct API responses
+  [key: string]: any;
 }
 
 type HttpMethod = 'GET' | 'POST' | 'PUT';
@@ -168,13 +170,14 @@ export class InnovatricsEventWorkflow {
       'false';
 
     if (!documentImages[0] || !primarySelfieInput) {
-      const failureEvent = this.createFailureEvent({
-        pubkey: providedUserId || 'unknown',
-        userId: providedUserId || 'unknown',
+      const failureResult = {
+        overallStatus: 'failed',
         reason: 'missing_input',
         content: 'Document front image and primary selfie are required',
-      });
-      return { event: failureEvent };
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+      return failureResult;
     }
 
     let customerId: string | undefined;
@@ -425,44 +428,36 @@ export class InnovatricsEventWorkflow {
           ? `KYC verification declined. ${declineMessages.join(' ')}`
           : 'KYC verification declined due to unmet biometric requirements.';
 
-        const failureEvent = this.createFailureEvent({
-          pubkey,
-          userId: customerId ?? pubkey,
-          reason: declineReasonTag,
-          content: declineContent,
-        });
+        // Create failure result with decline information
+        const failureResult = {
+          ...verification,
+          declineReason: declineReasonTag,
+          declineContent: declineContent,
+        };
 
-        const serialized = serializeResult(verification);
-        return serialized
-          ? { event: failureEvent, results: serialized }
-          : { event: failureEvent };
+        const serialized = serializeResult(failureResult);
+        return serialized || failureResult;
       }
 
       verification.overallStatus = 'completed';
       verification.updatedAt = new Date();
 
-      const successEvent = this.createSuccessEvent({
-        pubkey,
-      });
-
       const serialized = serializeResult(verification);
-      return serialized
-        ? { event: successEvent, results: serialized }
-        : { event: successEvent };
+      return serialized || verification;
     } catch (error: any) {
-      const pubkey = providedUserId || 'unknown';
-      const failureEvent = this.createFailureEvent({
-        pubkey,
-        userId: customerId ?? pubkey,
+      const failureResult = {
+        overallStatus: 'failed',
         reason: 'verification_failed',
         content: error?.message || 'Verification failed',
-      });
-      return { event: failureEvent };
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+      return failureResult;
     }
   }
 
   private async createCustomer(): Promise<{ id: string }> {
-    const response = await this.post<{ id: string }>('/customers');
+    const response = await this.post<{ id: string }>('customers', {});
     return response.data;
   }
 
@@ -486,6 +481,9 @@ export class InnovatricsEventWorkflow {
 
     const createDocumentPayload: Record<string, any> = {
       sources: ['VIZ', 'MRZ', 'DOCUMENT_PORTRAIT'],
+      // Try different field extraction approaches
+      enableFieldExtraction: true,
+      extractPersonalData: true,
     };
     if (Object.keys(classificationAdvice).length > 0) {
       createDocumentPayload.advice = { classification: classificationAdvice };
@@ -576,6 +574,8 @@ export class InnovatricsEventWorkflow {
         : {}),
       ...(collectedWarnings.length ? { warnings: collectedWarnings } : {}),
       ...(collectedErrors.length ? { errors: collectedErrors } : {}),
+      // Include disclosed inspection data which may contain extracted fields
+      ...(disclosedInspection ? { disclosedInspection } : {}),
     };
 
     return {
@@ -777,7 +777,12 @@ export class InnovatricsEventWorkflow {
     path: string,
     body?: unknown
   ): Promise<HttpResponse<T>> {
-    const url = new URL(path, this.config.baseUrl);
+    // Manually construct URL to avoid JavaScript's URL constructor behavior
+    const baseUrl = this.config.baseUrl.endsWith('/')
+      ? this.config.baseUrl.slice(0, -1)
+      : this.config.baseUrl;
+    const normalizedPath = path.startsWith('/') ? path : `/${path}`;
+    const url = new URL(baseUrl + normalizedPath);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.requestTimeoutMs);
 

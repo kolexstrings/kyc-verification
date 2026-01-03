@@ -28,8 +28,8 @@ Use whichever path matches your hardware.
 ## 2. Prepare the DIS bundle (common steps)
 
 ```bash
-unzip dot-digital-identity-service-1.59.1-amd64.zip
-cd dot-digital-identity-service-1.59.1-amd64
+unzip dot-digital-identity-service-1.60.1-amd64.zip
+cd dot-digital-identity-service-1.60.1-amd64
 
 mkdir -p license logs
 cp /path/to/iengine.lic license/iengine.lic
@@ -38,7 +38,7 @@ cp /path/to/iengine.lic license/iengine.lic
 The directory should now look like:
 
 ```
-dot-digital-identity-service-1.59.1-amd64/
+dot-digital-identity-service-1.60.1-amd64/
 ├─ config/
 ├─ doc/
 ├─ docker-compose.yml
@@ -57,7 +57,7 @@ dot-digital-identity-service-1.59.1-amd64/
 2. _(Optional)_ `docker login registry.dot.innovatrics.com` if Innovatrics shares their private registry. Otherwise Compose builds the image locally.
 3. **Start DIS**
    ```bash
-   cd /path/to/dot-digital-identity-service-1.59.1-amd64
+   cd /path/to/dot-digital-identity-service-1.60.1-amd64
    docker compose up -d
    ```
 4. **Follow logs**
@@ -115,9 +115,9 @@ dot-digital-identity-service-1.59.1-amd64/
 6. **Copy the bundle + license into the VM**
 
    ```bash
-   tar czf dis-bundle.tar.gz dot-digital-identity-service-1.59.1-amd64
+   tar czf dis-bundle.tar.gz dot-digital-identity-service-1.60.1-amd64
    scp -P 2222 dis-bundle.tar.gz kolade@127.0.0.1:~
-   scp -P 2222 dot-digital-identity-service-1.59.1-amd64/license/iengine.lic \
+   scp -P 2222 dot-digital-identity-service-1.60.1-amd64/license/iengine.lic \
        kolade@127.0.0.1:~
    ```
 
@@ -126,13 +126,13 @@ dot-digital-identity-service-1.59.1-amd64/
    ```bash
    cd ~
    tar xzf dis-bundle.tar.gz
-   mv ~/iengine.lic ~/dot-digital-identity-service-1.59.1-amd64/license/
+   mv ~/iengine.lic ~/dot-digital-identity-service-1.60.1-amd64/license/
    ```
 
 7. **Run DIS inside the VM**
 
    ```bash
-   cd ~/dot-digital-identity-service-1.59.1-amd64
+   cd ~/dot-digital-identity-service-1.60.1-amd64
    docker compose up -d
    docker ps
    ```
@@ -217,7 +217,7 @@ dot-digital-identity-service-1.59.1-amd64/
 
 ```bash
 # Start / restart services
-cd dot-digital-identity-service-1.59.1-amd64
+cd dot-digital-identity-service-1.60.1-amd64
 docker compose up -d
 
 # Rebuild after config changes

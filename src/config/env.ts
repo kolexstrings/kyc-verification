@@ -11,4 +11,8 @@ export const config = {
     bearerToken: process.env.INNOVATRICS_BEARER_TOKEN || '',
     host: process.env.INNOVATRICS_HOST || 'localhost:8080',
   },
+  features: {
+    useInnovatricsWorkflow:
+      (process.env.USE_INNOVATRICS_WORKFLOW || '').toLowerCase() === 'true',
+  },
 };

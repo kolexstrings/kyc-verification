@@ -4,6 +4,10 @@ import { NormalizedImage } from '../utils/image';
 
 type JsonValue = unknown;
 
+const PERSISTENCE_DISABLED =
+  process.env.DIS_SKIP_PERSISTENCE === 'true' ||
+  process.env.DIS_SKIP_STORE === 'true';
+
 interface InitializeParams {
   userId: string;
   externalId?: string;
@@ -49,7 +53,11 @@ function toDbJson(value: unknown): JsonValue {
     return value.toISOString();
   }
 
-  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+  if (
+    typeof value === 'string' ||
+    typeof value === 'number' ||
+    typeof value === 'boolean'
+  ) {
     return value;
   }
 
@@ -61,7 +69,13 @@ function toDbJson(value: unknown): JsonValue {
   }
 }
 
-async function fetchOnboardingRow(innovatricsCustomerId: string): Promise<CustomerOnboardingRow | null> {
+async function fetchOnboardingRow(
+  innovatricsCustomerId: string
+): Promise<CustomerOnboardingRow | null> {
+  if (PERSISTENCE_DISABLED) {
+    return null;
+  }
+
   const supabase = getSupabaseClient();
   const { data, error } = await supabase
     .from('customer_onboarding')
@@ -81,6 +95,10 @@ async function fetchOnboardingRow(innovatricsCustomerId: string): Promise<Custom
 }
 
 async function insertEvent(customerId: string, event: OnboardingEvent) {
+  if (PERSISTENCE_DISABLED) {
+    return;
+  }
+
   const supabase = getSupabaseClient();
   const { error } = await supabase.from('onboarding_events').insert({
     customer_onboarding_id: customerId,
@@ -103,6 +121,10 @@ async function updateOnboardingRecord(options: {
   event?: OnboardingEvent;
   existing?: CustomerOnboardingRow | null;
 }) {
+  if (PERSISTENCE_DISABLED) {
+    return null;
+  }
+
   const { innovatricsCustomerId, fields, event, existing } = options;
   const supabase = getSupabaseClient();
 
@@ -143,6 +165,10 @@ export async function initializeOnboardingRecord({
   externalId,
   innovatricsCustomerId,
 }: InitializeParams) {
+  if (PERSISTENCE_DISABLED) {
+    return null;
+  }
+
   const supabase = getSupabaseClient();
   const existing = await fetchOnboardingRow(innovatricsCustomerId);
 
@@ -200,7 +226,13 @@ export async function initializeOnboardingRecord({
   return data;
 }
 
-export async function getOnboardingByInnovatricsId(innovatricsCustomerId: string) {
+export async function getOnboardingByInnovatricsId(
+  innovatricsCustomerId: string
+) {
+  if (PERSISTENCE_DISABLED) {
+    return null;
+  }
+
   const supabase = getSupabaseClient();
   const { data, error } = await supabase
     .from('customer_onboarding')
@@ -400,9 +432,12 @@ export async function recordRetry(
   const existing = await fetchOnboardingRow(innovatricsCustomerId);
 
   if (!existing) {
-    console.warn('Cannot record retry because onboarding record was not found', {
-      innovatricsCustomerId,
-    });
+    console.warn(
+      'Cannot record retry because onboarding record was not found',
+      {
+        innovatricsCustomerId,
+      }
+    );
     return null;
   }
 
