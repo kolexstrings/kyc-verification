@@ -19,8 +19,7 @@ export interface InnovatricsWorkflowConfig {
 
 export interface VerificationInput {
   identificationDocumentImage: string[] | string;
-  image: string;
-  selfieImages?: string[] | string;
+  selfieImages: string[] | string;
   documentType?: string;
   firstNationality?: string;
   userId?: string;
@@ -160,9 +159,12 @@ export class InnovatricsEventWorkflow {
 
   async run(input: VerificationInput): Promise<VerificationOutcome> {
     const documentImages = toArray(input.identificationDocumentImage);
-    const additionalSelfiesInput = toArray(input.selfieImages);
+    const primarySelfieCandidates = toArray(input.selfieImages);
     const primarySelfieInput =
-      typeof input.image === 'string' ? input.image.trim() : '';
+      (primarySelfieCandidates[0] ?? '').trim?.() ??
+      primarySelfieCandidates[0] ??
+      '';
+    const additionalSelfiesInput = primarySelfieCandidates.slice(1);
     const providedUserId =
       typeof input.userId === 'string' ? input.userId.trim() : '';
     const passiveLivenessEnabled =
@@ -507,6 +509,9 @@ export class InnovatricsEventWorkflow {
             classification: {
               pageTypes: ['front'],
             },
+            // Request field extraction at page level
+            extractFields: true,
+            enableOcr: true,
           },
         }),
       {
@@ -524,6 +529,9 @@ export class InnovatricsEventWorkflow {
               classification: {
                 pageTypes: ['back'],
               },
+              // Request field extraction at page level
+              extractFields: true,
+              enableOcr: true,
             },
           }),
         {
@@ -542,13 +550,42 @@ export class InnovatricsEventWorkflow {
 
     let disclosedInspection: any | undefined;
     try {
+      // Try different approaches for field extraction
+      console.log('[DEBUG] Attempting OCR field extraction...');
+
+      // Method 1: Try direct OCR endpoint
+      let ocrResponse;
+      try {
+        ocrResponse = await this.get(`/customers/${customerId}/document/ocr`);
+        console.log(
+          '[DEBUG] OCR response:',
+          JSON.stringify(ocrResponse, null, 2)
+        );
+      } catch (ocrError: any) {
+        console.log(
+          '[DEBUG] OCR endpoint not available:',
+          ocrError?.message || ocrError
+        );
+      }
+
+      // Method 2: Try disclose with different payload
       const disclosedResponse = await withRetry(
-        () => this.post(`/customers/${customerId}/document/inspect/disclose`),
+        () =>
+          this.post(`/customers/${customerId}/document/inspect/disclose`, {
+            // Try minimal payload
+            extractText: true,
+            includeMrz: true,
+            includeVisualZone: true,
+          }),
         {
           shouldRetry: this.isRetryableError,
         }
       );
       disclosedInspection = disclosedResponse.data;
+      console.log(
+        '[DEBUG] Disclosed inspection response:',
+        JSON.stringify(disclosedInspection, null, 2)
+      );
     } catch (discloseError) {
       console.warn('Document inspection disclosure failed', discloseError);
     }

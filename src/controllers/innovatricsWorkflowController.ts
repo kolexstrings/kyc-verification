@@ -25,8 +25,7 @@ export class InnovatricsWorkflowController {
 
       const verificationInput: VerificationInput = {
         identificationDocumentImage: req.body?.identificationDocumentImage,
-        image: req.body?.image,
-        selfieImages: req.body?.selfieImages,
+        selfieImages: req.body?.selfieImages ?? req.body?.image,
         documentType: req.body?.documentType,
         firstNationality: req.body?.firstNationality,
         userId: req.body?.userId,

@@ -65,7 +65,6 @@ export interface KYCProfile {
   beneficialOwnership: string;
   pepStatus: string;
   identificationDocumentImage?: string[] | string;
-  image?: string;
   selfieImages?: string[] | string;
   consentMessage: string;
   displayName?: string;
@@ -169,9 +168,11 @@ export class KYCVerificationController {
         kycData.identificationDocumentImage
       );
       const selfieImagesFromBody = toStringArray(kycData.selfieImages);
+      const primarySelfieBase64 = selfieImagesFromBody[0];
+      const supplementalSelfiePayloads = selfieImagesFromBody.slice(1);
 
       const hasDocumentFront = Boolean(documentImagesFromBody[0]);
-      const hasPrimarySelfie = Boolean(kycData.image);
+      const hasPrimarySelfie = Boolean(primarySelfieBase64);
 
       if (!hasDocumentFront || !hasPrimarySelfie) {
         return ResponseHandler.validationError(
@@ -181,7 +182,7 @@ export class KYCVerificationController {
               ? 'Document front image must be provided as a base64 string'
               : undefined,
             !hasPrimarySelfie
-              ? 'Primary selfie image must be provided as a base64 string'
+              ? 'Primary selfie image must be provided in selfieImages[0] as a base64 string'
               : undefined,
           ].filter((msg): msg is string => Boolean(msg))
         );
@@ -358,7 +359,7 @@ export class KYCVerificationController {
         console.log('STEP 3: Uploading selfie image');
         console.log('='.repeat(70));
         const primarySelfieSource = await resolveImageSource({
-          base64: kycData.image,
+          base64: primarySelfieBase64,
           defaultFileName: `${userIdForTracking}_selfie_primary`,
           tags: ['kyc', 'selfie', 'primary'],
           kind: 'selfie',
@@ -546,12 +547,12 @@ export class KYCVerificationController {
           faceMatchScores.push(primaryComparison.score);
           console.log('Primary selfie comparison (manual):', primaryComparison);
 
-          for (let i = 0; i < selfieImagesFromBody.length; i++) {
+          for (let i = 0; i < supplementalSelfiePayloads.length; i++) {
             console.log(
               `\nProcessing additional selfie base64 ${i + 1} (manual comparison)...`
             );
             const additionalSelfie = await resolveImageSource({
-              base64: selfieImagesFromBody[i],
+              base64: supplementalSelfiePayloads[i],
               defaultFileName: `${userIdForTracking}_selfie_base64_${i + 1}`,
               tags: ['kyc', 'selfie', 'additional'],
               kind: 'selfie',
@@ -673,7 +674,7 @@ export class KYCVerificationController {
           (process.env.DIS_USE_PASSIVE_LIVENESS ?? 'true').toLowerCase() !==
           'false';
 
-        const additionalSelfiePayloads = selfieImagesFromBody
+        const additionalSelfiePayloads = supplementalSelfiePayloads
           .map((payload, index) => {
             if (!payload) {
               return null;
