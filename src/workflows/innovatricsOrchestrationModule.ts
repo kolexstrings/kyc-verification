@@ -86,6 +86,7 @@ export interface VerificationFlowResult {
   overallStatus: 'pending' | 'in_progress' | 'completed' | 'failed';
   createdAt: Date;
   updatedAt: Date;
+  customerData?: any;
   documentVerification?: DocumentVerificationResult;
   selfieUpload?: {
     id: string;
@@ -435,6 +436,7 @@ export class InnovatricsEventWorkflow {
           ...verification,
           declineReason: declineReasonTag,
           declineContent: declineContent,
+          customerData: await this.getCustomerData(customerId),
         };
 
         const serialized = serializeResult(failureResult);
@@ -443,6 +445,7 @@ export class InnovatricsEventWorkflow {
 
       verification.overallStatus = 'completed';
       verification.updatedAt = new Date();
+      verification.customerData = await this.getCustomerData(customerId);
 
       const serialized = serializeResult(verification);
       return serialized || verification;
@@ -451,10 +454,27 @@ export class InnovatricsEventWorkflow {
         overallStatus: 'failed',
         reason: 'verification_failed',
         content: error?.message || 'Verification failed',
+        ...(customerId ? { customerId } : {}),
+        ...(customerId
+          ? { customerData: await this.getCustomerData(customerId) }
+          : {}),
         createdAt: new Date(),
         updatedAt: new Date(),
       };
       return failureResult;
+    }
+  }
+
+  private async getCustomerData(customerId: string): Promise<any | undefined> {
+    try {
+      const response = await this.get(`/customers/${customerId}`);
+      return response.data;
+    } catch (error) {
+      console.warn(
+        '[InnovatricsWorkflow] Failed to fetch customer data',
+        error
+      );
+      return undefined;
     }
   }
 

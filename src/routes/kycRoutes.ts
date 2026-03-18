@@ -12,11 +12,29 @@ const validateKYCProfile = [
     .withMessage(
       'identificationDocumentImage must be provided as base64 JSON array/string'
     ),
-  body('image')
-    .optional()
-    .isString()
-    .isLength({ min: 1 })
-    .withMessage('image must be provided as a base64 string'),
+  body('selfieImages')
+    .custom(value => {
+      if (Array.isArray(value)) {
+        const hasValidEntry = value.some(
+          item => typeof item === 'string' && item.trim().length > 0
+        );
+        if (!hasValidEntry) {
+          throw new Error(
+            'selfieImages must include at least one non-empty base64 string'
+          );
+        }
+        return true;
+      }
+      if (typeof value === 'string' && value.trim().length > 0) {
+        return true;
+      }
+      throw new Error(
+        'selfieImages must be provided as a base64 string or array of strings'
+      );
+    })
+    .withMessage(
+      'selfieImages must be provided as a base64 string or array of strings'
+    ),
   body('name')
     .isString()
     .isLength({ min: 1, max: 100 })
@@ -98,7 +116,7 @@ const kycVerifyHandler = (req: Request, res: Response) => {
  *             type: object
  *             required:
  *               - identificationDocumentImage
- *               - image
+ *               - selfieImages
  *               - name
  *               - surname
  *               - dateOfBirth
@@ -110,16 +128,17 @@ const kycVerifyHandler = (req: Request, res: Response) => {
  *                   type: string
  *                 description: Array of base64 encoded document images (front, optional back). Accepts plain base64 or data URI string (data:image/jpeg;base64,...)
  *                 example: ["data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQ...front", "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQ...back"]
- *               image:
- *                 type: string
- *                 description: Main profile/selfie image (base64 encoded)
- *                 example: "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQ...selfie"
  *               selfieImages:
- *                 type: array
- *                 items:
- *                   type: string
- *                 description: Optional additional selfie frames (base64) for passive liveness evaluation
- *                 example: ["data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQ...liveness"]
+ *                 oneOf:
+ *                   - type: array
+ *                     minItems: 1
+ *                     items:
+ *                       type: string
+ *                   - type: string
+ *                 description: Primary selfie (first entry) plus optional additional frames for liveness (base64 or data URI)
+ *                 example:
+ *                   - "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQ...selfie_primary"
+ *                   - "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQ...selfie_additional"
  *               name:
  *                 type: string
  *                 description: User's first name
@@ -150,7 +169,6 @@ const kycVerifyHandler = (req: Request, res: Response) => {
  *               identificationDocumentImage:
  *                 - "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQ...front"
  *                 - "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQ...back"
- *               image: "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQ...selfie"
  *               selfieImages:
  *                 - "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAAAQ...liveness"
  *               name: "John"

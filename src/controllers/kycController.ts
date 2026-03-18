@@ -11,17 +11,6 @@ import {
   InnovatricsImagePayload,
 } from '../services/innovatricsClient';
 import sharp from 'sharp';
-import {
-  initializeOnboardingRecord,
-  markFinished,
-  recordDocumentResult,
-  recordError,
-  recordFaceComparison,
-  recordFaceDetection,
-  recordLivenessResult,
-  recordRetry,
-  recordSelfieResult,
-} from '../services/onboardingPersistence';
 
 const innovatricsClient = new InnovatricsService();
 
@@ -135,6 +124,21 @@ function buildAcceptedUserEvent(pubkey: string, content: string): NostrEvent {
   };
 }
 
+async function safeGetCustomerData(
+  customerId: string | null
+): Promise<any | undefined> {
+  if (!customerId) {
+    return undefined;
+  }
+
+  try {
+    return await innovatricsClient.getCustomer(customerId);
+  } catch (error) {
+    console.warn('[KYC] Failed to fetch Innovatrics customer data', error);
+    return undefined;
+  }
+}
+
 function buildDeclinedUserEvent(
   pubkey: string,
   userId: string | undefined,
@@ -203,12 +207,6 @@ export class KYCVerificationController {
         providedUserId || `${kycData.name}_${kycData.surname}_${Date.now()}`;
       const userIdForTracking = externalId;
       userPubKey = userIdForTracking;
-
-      await initializeOnboardingRecord({
-        userId: userIdForTracking,
-        externalId,
-        innovatricsCustomerId: customer.id,
-      });
 
       const results: KYCVerificationResult = {
         customerId,
@@ -305,15 +303,14 @@ export class KYCVerificationController {
             ? { issuingCountry: kycData.firstNationality }
             : {}),
           onRetry: ({ stage, attempt, delayMs, error }) => {
-            void recordRetry(customerId!, {
-              reason: `document_${stage}`,
-              context: {
-                attempt,
-                delayMs,
-                message: error?.message,
-                status: error?.response?.status,
-              },
-            }).catch(() => undefined);
+            console.warn('[KYC] Document verification retry', {
+              customerId,
+              stage,
+              attempt,
+              delayMs,
+              message: error?.message,
+              status: error?.response?.status,
+            });
           },
         });
 
@@ -346,13 +343,6 @@ export class KYCVerificationController {
           );
         }
         console.log('='.repeat(70) + '\n');
-
-        await recordDocumentResult(customerId, {
-          documentResult,
-          images: documentBack
-            ? { front: documentFront.normalized, back: documentBack.normalized }
-            : { front: documentFront.normalized },
-        });
 
         // Step 3: Upload main selfie
         console.log('\n' + '='.repeat(70));
@@ -389,10 +379,6 @@ export class KYCVerificationController {
           id: customerId,
         };
         results.selfieUpload = selfieResult;
-        await recordSelfieResult(customerId, {
-          selfieResult,
-          image: primarySelfieSource.normalized,
-        });
         let selfieBuffer: Buffer | null = null;
         try {
           selfieBuffer = Buffer.from(selfieSanitized, 'base64');
@@ -429,11 +415,6 @@ export class KYCVerificationController {
         };
         console.log('\nSUCCESS: Face detection completed');
         console.log('='.repeat(70) + '\n');
-        await recordFaceDetection(customerId, {
-          faceResult,
-          maskResult,
-          image: primarySelfieSource.normalized,
-        });
 
         // Step 5: Face comparison using Innovatrics inspectCustomer
         // This uses the face Innovatrics already detected during document verification
@@ -645,16 +626,6 @@ export class KYCVerificationController {
         );
         console.log('='.repeat(70) + '\n');
 
-        await recordFaceComparison(customerId, {
-          comparisonResult: {
-            score: faceMatchScore,
-            ...(faceMatchScores.length > 1
-              ? { strategy: comparisonStrategy, scores: faceMatchScores }
-              : { strategy: comparisonStrategy }),
-          },
-          image: primarySelfieSource.normalized,
-        });
-
         // Step 6: Inspection-based liveness check (reliable with single selfie)
         console.log('\n' + '='.repeat(70));
         console.log('STEP 6: Performing liveness check');
@@ -775,11 +746,6 @@ export class KYCVerificationController {
         }
         console.log('='.repeat(70) + '\n');
 
-        await recordLivenessResult(customerId, {
-          livenessResult: livenessResultPayload,
-          image: primarySelfieSource.normalized,
-        });
-
         const faceMatchPassed =
           typeof faceMatchScore === 'number' &&
           faceMatchScore >= FACE_MATCH_SUCCESS_THRESHOLD;
@@ -815,18 +781,6 @@ export class KYCVerificationController {
           results.overallStatus = 'failed';
           results.updatedAt = new Date();
 
-          await recordError(customerId, {
-            message: declineContent,
-            markFailed: true,
-            context: {
-              faceMatch: {
-                score: faceMatchScore,
-                threshold: FACE_MATCH_SUCCESS_THRESHOLD,
-              },
-              liveness: livenessResult,
-            },
-          }).catch(() => undefined);
-
           console.log('KYC verification declined:', {
             reasons: declineReasons,
             messages: declineMessages,
@@ -840,14 +794,15 @@ export class KYCVerificationController {
           );
 
           res.status(422);
-          return res.json(declinedUser);
+          const customerData = await safeGetCustomerData(customerId);
+          return res.json(
+            customerData ? { ...declinedUser, customerData } : declinedUser
+          );
         }
 
         // Update overall status
         results.overallStatus = 'completed';
         results.updatedAt = new Date();
-
-        await markFinished(customerId);
 
         // Final success response
         console.log('\n' + '='.repeat(70));
@@ -881,26 +836,16 @@ export class KYCVerificationController {
         );
 
         res.status(200);
-        return res.json(acceptedUsers);
+        const customerData = await safeGetCustomerData(customerId);
+        return res.json(
+          customerData ? { ...acceptedUsers, customerData } : acceptedUsers
+        );
       } catch (verificationError: any) {
         // If verification fails, still return partial results
         results.overallStatus = 'failed';
         results.updatedAt = new Date();
 
         console.error('KYC verification error:', verificationError);
-        const errorPayload: Parameters<typeof recordError>[1] = {
-          message: verificationError?.message ?? 'Verification failed',
-          markFailed: true,
-          context: verificationError?.response?.data ?? {
-            message: verificationError?.message,
-          },
-        };
-
-        if (verificationError?.response?.status) {
-          errorPayload.code = String(verificationError.response.status);
-        }
-
-        await recordError(customerId, errorPayload).catch(() => undefined);
 
         const declinedUser = buildDeclinedUserEvent(
           userPubKey,
@@ -910,25 +855,13 @@ export class KYCVerificationController {
         );
 
         res.status(500);
-        return res.json(declinedUser);
+        const customerData = await safeGetCustomerData(customerId);
+        return res.json(
+          customerData ? { ...declinedUser, customerData } : declinedUser
+        );
       }
     } catch (error: any) {
       console.error('KYC processing error:', error);
-      if (customerId) {
-        const errorPayload: Parameters<typeof recordError>[1] = {
-          message: error?.message ?? 'Processing failed',
-          markFailed: true,
-          context: error?.response?.data ?? {
-            message: error?.message,
-          },
-        };
-
-        if (error?.response?.status) {
-          errorPayload.code = String(error.response.status);
-        }
-
-        await recordError(customerId, errorPayload).catch(() => undefined);
-      }
       const declinedUser = buildDeclinedUserEvent(
         userPubKey || (customerId ?? 'unknown'),
         customerId ?? (userPubKey || undefined),
@@ -937,7 +870,10 @@ export class KYCVerificationController {
       );
 
       res.status(500);
-      return res.json(declinedUser);
+      const customerData = await safeGetCustomerData(customerId);
+      return res.json(
+        customerData ? { ...declinedUser, customerData } : declinedUser
+      );
     }
   }
 }

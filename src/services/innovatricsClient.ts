@@ -223,6 +223,17 @@ export class InnovatricsService {
     }
   }
 
+  async getCustomer(customerId: string): Promise<any> {
+    try {
+      const response = await this.client.get(`/customers/${customerId}`);
+      return response.data;
+    } catch (error: any) {
+      throw new Error(
+        `Failed to get customer: ${error.response?.data?.message || error.message}`
+      );
+    }
+  }
+
   private buildImagePayload(image: InnovatricsImagePayload) {
     if (typeof image === 'string') {
       return {
